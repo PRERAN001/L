@@ -1,3 +1,4 @@
+import { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -5,11 +6,14 @@ import {
   Image,
   ScrollView,
   Pressable,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useAuth } from "@clerk/expo";
+import { apiFetch } from "@/lib/api";
 
-const users = [
+const initialUsers = [
   {
     username: "alex",
     name: "Alex Johnson",
@@ -27,28 +31,70 @@ const users = [
   },
 ];
 
-const posts = Array.from({ length: 30 }, (_, i) => ({
-  id: i,
-  image: `https://picsum.photos/400/400?random=${i + 50}`,
-}));
-
 export default function Search() {
+  const { getToken } = useAuth();
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const handleSearch = useCallback(
+    async (q: string) => {
+      try {
+        setLoading(true);
+        const token = await getToken();
+        const results = await apiFetch(`/search?q=${encodeURIComponent(q)}`, {}, token);
+        if (Array.isArray(results)) {
+          setSearchResults(
+            results.map((u) => ({
+              username: u.username,
+              name: u.name,
+              image: u.profileImage || `https://i.pravatar.cc/150?u=${u.username}`,
+            }))
+          );
+        }
+      } catch (err) {
+        console.log("Search error:", err);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [getToken]
+  );
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (query.trim()) {
+        handleSearch(query.trim());
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [query, handleSearch]);
+
+  const displayUsers = query.trim() ? searchResults : initialUsers;
+
   return (
     <SafeAreaView className="flex-1 bg-white">
       {/* HEADER / SEARCH BAR */}
       <View className="px-4 pt-2 pb-3">
         <View className="flex-row items-center bg-gray-100 rounded-xl px-3 h-11">
-          <Ionicons
-            name="search"
-            size={20}
-            color="#737373"
-          />
+          <Ionicons name="search" size={20} color="#737373" />
 
           <TextInput
-            placeholder="Search"
+            placeholder="Search users..."
             placeholderTextColor="#737373"
+            value={query}
+            onChangeText={setQuery}
             className="flex-1 ml-2 text-base text-black"
           />
+
+          {query ? (
+            <Pressable onPress={() => setQuery("")}>
+              <Ionicons name="close-circle" size={20} color="#737373" />
+            </Pressable>
+          ) : null}
         </View>
       </View>
 
@@ -56,60 +102,60 @@ export default function Search() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* SUGGESTED USERS */}
+        {/* SUGGESTED / SEARCH USERS */}
         <View className="px-4 pt-2 pb-4">
           <View className="flex-row items-center justify-between mb-4">
             <Text className="text-base font-bold">
-              Suggested for you
+              {query.trim() ? "Search Results" : "Suggested for you"}
             </Text>
 
-            <Pressable>
-              <Text className="text-blue-500 font-semibold">
-                See all
-              </Text>
-            </Pressable>
+            {loading ? <ActivityIndicator size="small" color="#000" /> : null}
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-          >
-            {users.map((user) => (
-              <Pressable
-                key={user.username}
-                className="items-center mr-5"
-              >
-                <Image
-                  source={{ uri: user.image }}
-                  className="w-20 h-20 rounded-full"
-                />
+          {displayUsers.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {displayUsers.map((user) => (
+                <Pressable
+                  key={user.username}
+                  className="items-center mr-5"
+                >
+                  <Image
+                    source={{ uri: user.image }}
+                    className="w-20 h-20 rounded-full bg-gray-200"
+                  />
 
-                <Text className="font-semibold text-sm mt-2">
-                  {user.username}
-                </Text>
-
-                <Text className="text-gray-500 text-xs mt-1">
-                  {user.name}
-                </Text>
-
-                <View className="bg-black rounded-lg px-5 py-2 mt-2">
-                  <Text className="text-white font-semibold text-xs">
-                    Follow
+                  <Text className="font-semibold text-sm mt-2">
+                    {user.username}
                   </Text>
-                </View>
-              </Pressable>
-            ))}
-          </ScrollView>
+
+                  <Text className="text-gray-500 text-xs mt-1">
+                    {user.name}
+                  </Text>
+
+                  <View className="bg-black rounded-lg px-5 py-2 mt-2">
+                    <Text className="text-white font-semibold text-xs">
+                      Follow
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text className="text-gray-500 py-4 text-center">
+              No users found matching "{query}"
+            </Text>
+          )}
         </View>
 
-        {/* EXPLORE GRID */}
+        {/* EXPLORE SECTION */}
         <View className="border-t border-gray-200 pt-1">
-          <Text className="font-bold text-base px-4 py-3">
-            Explore
-          </Text>
+          <Text className="font-bold text-base px-4 py-3">Explore</Text>
 
           <View className="flex-row flex-wrap">
-            {posts.map((post) => (
+            {Array.from({ length: 12 }, (_, i) => ({
+              id: i,
+              image: `https://picsum.photos/400/400?random=${i + 50}`,
+            })).map((post) => (
               <Pressable
                 key={post.id}
                 className="w-1/3 aspect-square p-[1px]"

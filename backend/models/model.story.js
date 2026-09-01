@@ -44,4 +44,5 @@ storySchema.index(
   { expireAfterSeconds: 0 }
 );
 
-module.exports = mongoose.model("Story", storySchema);
+const story=mongoose.model("Story", storySchema);
+module.exports = story;

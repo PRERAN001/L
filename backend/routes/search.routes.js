@@ -2,14 +2,11 @@ const express = require("express");
 const auth = require("../middleware/auth");
 
 const {
-  createStory,
-  getStories,
-} = require("../controllers/story.controller");
+  searchUsers,
+} = require("../controllers/search.controller");
 
 const router = express.Router();
 
-router.post("/", auth,createStory);
-
-router.get("/",auth, getStories);
+router.get("/", auth,searchUsers);
 
 module.exports = router;

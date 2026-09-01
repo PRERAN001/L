@@ -1,76 +1,65 @@
-const Story = require("../models/Story");
-const User = require("../models/User");
+const Story = require("../models/model.story");
+const { getOrCreateUser } = require("../utils/userHelper");
 
 const createStory = async (req, res) => {
   try {
-    const { mediaUrl, mediaType } = req.body;
+    const { mediaUrl, mediaType = "image" } = req.body;
+    const clerkId = req.auth?.userId;
 
-    const clerkId = req.auth.userId;
-
-    const user = await User.findOne({ clerkId });
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    if (!clerkId) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
+
+    const user = await getOrCreateUser(clerkId);
 
     const story = await Story.create({
       user: user._id,
       mediaUrl,
       mediaType,
-
-      expiresAt: new Date(
-        Date.now() + 24 * 60 * 60 * 1000
-      ),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
-    res.status(201).json(story);
+    const populatedStory = await Story.findById(story._id).populate("user", "username profileImage");
+    res.status(201).json(populatedStory);
   } catch (error) {
     console.error(error);
-
-    res.status(500).json({
-      message: "Failed to create story",
-    });
+    res.status(500).json({ message: "Failed to create story" });
   }
 };
 
 const getStories = async (req, res) => {
   try {
-    const clerkId = req.auth.userId;
-
-    const user = await User.findOne({ clerkId });
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    const clerkId = req.auth?.userId;
+    if (!clerkId) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const users = [
-      ...user.following,
+    const user = await getOrCreateUser(clerkId);
+
+    const userIds = [
+      ...(user.following || []),
       user._id,
     ];
 
-    const stories = await Story.find({
-      user: {
-        $in: users,
-      },
-
-      expiresAt: {
-        $gt: new Date(),
-      },
+    let stories = await Story.find({
+      user: { $in: userIds },
+      expiresAt: { $gt: new Date() },
     })
       .populate("user", "username profileImage")
       .sort({ createdAt: -1 });
 
+    if (stories.length === 0) {
+      stories = await Story.find({
+        expiresAt: { $gt: new Date() },
+      })
+        .populate("user", "username profileImage")
+        .sort({ createdAt: -1 });
+    }
+
     res.json(stories);
   } catch (error) {
     console.error(error);
-
-    res.status(500).json({
-      message: "Failed to get stories",
-    });
+    res.status(500).json({ message: "Failed to get stories" });
   }
 };
 

@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const { clerkMiddleware } = require("@clerk/express");
 
 const mediaRoutes = require("./routes/media.routes");
 const profileRoutes = require("./routes/profile.routes");
@@ -16,6 +17,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Clerk
+app.use(clerkMiddleware({
+  publishableKey: process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY,
+  secretKey: process.env.CLERK_SECRET_KEY,
+}));
+
 app.use("/api/media", mediaRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/feed", feedRoutes);
@@ -28,10 +35,12 @@ mongoose
   .then(() => {
     console.log("MongoDB connected");
 
-    app.listen(3000, () => {
-      console.log("Server running on port 3000");
+    const PORT = process.env.PORT || 3000;
+    const HOST = "0.0.0.0";
+    app.listen(PORT, HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT} (Access via http://192.168.29.154:${PORT})`);
     });
   })
   .catch((error) => {
-    console.error("MongoDB connection failed:", error);
+    console.error(error);
   });

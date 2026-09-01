@@ -1,174 +1,196 @@
+import { useState } from "react";
 import {
   View,
   Text,
-  Image,
   Pressable,
-  ScrollView,
+  Image,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import { useAuth } from "@clerk/expo";
 
-const recentPhotos = [
-  "https://picsum.photos/400/400?random=101",
-  "https://picsum.photos/400/400?random=102",
-  "https://picsum.photos/400/400?random=103",
-  "https://picsum.photos/400/400?random=104",
-  "https://picsum.photos/400/400?random=105",
-  "https://picsum.photos/400/400?random=106",
-  "https://picsum.photos/400/400?random=107",
-  "https://picsum.photos/400/400?random=108",
-  "https://picsum.photos/400/400?random=109",
-];
+const API_URL = "http://192.168.29.154:3000/api";
 
 export default function Create() {
+  const { getToken } = useAuth();
+
+  const [image, setImage] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const pickImage = async () => {
+    const permission =
+      await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert(
+        "Permission required",
+        "Allow access to your photos."
+      );
+      return;
+    }
+
+    const result =
+      await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.8,
+      });
+
+    if (!result.canceled) {
+      setImage(result.assets[0]);
+    }
+  };
+
+  const createPost = async () => {
+  if (!image) {
+    Alert.alert("Select an image first");
+    return;
+  }
+
+  try {
+    setUploading(true);
+
+    // 1. Upload image
+    const imageUrl = await uploadImage(image);
+
+    console.log("Cloudinary URL:", imageUrl);
+
+    // 2. Get Clerk token
+    const token = await getToken();
+
+    // 3. Send URL to your backend
+    const response = await fetch(
+      `${API_URL}/media`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+
+        body: JSON.stringify({
+          mediaUrl: imageUrl,
+          mediaType: "image",
+          caption: "My first real post 🚀",
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.message || "Post creation failed"
+      );
+    }
+
+    console.log("POST CREATED:", data);
+
+    Alert.alert("Success", "Post created!");
+
+    setImage(null);
+
+  } catch (error) {
+    console.error(error);
+
+    Alert.alert(
+      "Error",
+      error.message || "Something went wrong"
+    );
+  } finally {
+    setUploading(false);
+  }
+};
+
+  const uploadImage = async (image) => {
+  const formData = new FormData();
+
+  formData.append("file", {
+    uri: image.uri,
+    type: image.mimeType || "image/jpeg",
+    name: image.fileName || "image.jpg",
+  });
+
+  formData.append(
+    "upload_preset",
+    "blog_upload"
+  );
+
+ 
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/dxn29vjxu/image/upload`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.log("Cloudinary error:", data);
+
+    throw new Error(
+      data.error?.message || "Image upload failed"
+    );
+  }
+
+  return data.secure_url;
+};
+
   return (
     <SafeAreaView className="flex-1 bg-white">
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <View className="p-5">
 
-        {/* HEADER */}
-        <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200">
-          <Pressable>
-            <Ionicons
-              name="close"
-              size={28}
-              color="black"
+        <Text className="text-2xl font-bold mb-5">
+          Create Post
+        </Text>
+
+        <Pressable
+          onPress={pickImage}
+          className="h-80 bg-gray-100 rounded-xl items-center justify-center overflow-hidden"
+        >
+          {image ? (
+            <Image
+              source={{ uri: image.uri }}
+              className="w-full h-full"
+              resizeMode="cover"
             />
-          </Pressable>
-
-          <Text className="text-lg font-bold">
-            Create
-          </Text>
-
-          <Pressable>
-            <Text className="text-blue-500 font-bold">
-              Next
+          ) : (
+            <Text className="text-gray-500">
+              Select an image
             </Text>
-          </Pressable>
-        </View>
+          )}
+        </Pressable>
 
-        {/* MEDIA PREVIEW */}
-        <View className="bg-black aspect-square">
-          <Image
-            source={{
-              uri: recentPhotos[0],
-            }}
-            className="w-full h-full"
-            resizeMode="cover"
-          />
+        <Pressable
+          onPress={pickImage}
+          className="mt-5 bg-gray-200 p-4 rounded-xl items-center"
+        >
+          <Text className="font-bold">
+            Choose from gallery
+          </Text>
+        </Pressable>
 
-          {/* CAMERA BUTTON */}
-          <Pressable className="absolute bottom-4 left-4 bg-black/60 rounded-full p-3">
-            <Ionicons
-              name="camera"
-              size={24}
-              color="white"
-            />
-          </Pressable>
-
-          {/* GALLERY BUTTON */}
-          <Pressable className="absolute bottom-4 right-4 bg-black/60 rounded-full p-3">
-            <Ionicons
-              name="images"
-              size={24}
-              color="white"
-            />
-          </Pressable>
-        </View>
-
-        {/* POST TYPE */}
-        <View className="flex-row justify-around py-4 border-b border-gray-200">
-
-          <Pressable className="items-center">
-            <Ionicons
-              name="image-outline"
-              size={25}
-              color="black"
-            />
-            <Text className="text-xs mt-1">
+        <Pressable
+          onPress={createPost}
+          disabled={uploading}
+          className="mt-3 bg-black p-4 rounded-xl items-center"
+        >
+          {uploading ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <Text className="text-white font-bold">
               Post
             </Text>
-          </Pressable>
+          )}
+        </Pressable>
 
-          <Pressable className="items-center">
-            <Ionicons
-              name="play-outline"
-              size={25}
-              color="black"
-            />
-            <Text className="text-xs mt-1">
-              Reel
-            </Text>
-          </Pressable>
-
-          <Pressable className="items-center">
-            <Ionicons
-              name="book-outline"
-              size={25}
-              color="black"
-            />
-            <Text className="text-xs mt-1">
-              Story
-            </Text>
-          </Pressable>
-
-          <Pressable className="items-center">
-            <Ionicons
-              name="videocam-outline"
-              size={25}
-              color="black"
-            />
-            <Text className="text-xs mt-1">
-              Live
-            </Text>
-          </Pressable>
-
-        </View>
-
-        {/* RECENT */}
-        <View className="px-4 py-4">
-
-          <View className="flex-row items-center justify-between mb-4">
-            <Text className="text-lg font-bold">
-              Recent
-            </Text>
-
-            <Pressable>
-              <Text className="text-blue-500 font-semibold">
-                Select multiple
-              </Text>
-            </Pressable>
-          </View>
-
-          {/* GALLERY */}
-          <View className="flex-row flex-wrap">
-            {recentPhotos.map((photo, index) => (
-              <Pressable
-                key={index}
-                className="w-1/3 aspect-square p-[1px]"
-              >
-                <Image
-                  source={{ uri: photo }}
-                  className="w-full h-full"
-                  resizeMode="cover"
-                />
-
-                {/* SELECTED INDICATOR */}
-                {index === 0 && (
-                  <View className="absolute top-2 right-2 w-6 h-6 rounded-full bg-blue-500 items-center justify-center">
-                    <Ionicons
-                      name="checkmark"
-                      size={16}
-                      color="white"
-                    />
-                  </View>
-                )}
-              </Pressable>
-            ))}
-          </View>
-
-        </View>
-
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }

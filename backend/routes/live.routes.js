@@ -1,4 +1,5 @@
 const express = require("express");
+const auth = require("../middleware/auth");
 
 const {
   startLive,
@@ -8,10 +9,10 @@ const {
 
 const router = express.Router();
 
-router.post("/", startLive);
+router.post("/",auth, startLive);
 
-router.get("/", getLiveStreams);
+router.get("/",auth, getLiveStreams);
 
-router.delete("/", endLive);
+router.delete("/",auth, endLive);
 
 module.exports = router;

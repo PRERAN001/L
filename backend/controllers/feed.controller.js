@@ -1,39 +1,39 @@
-const Post = require("../models/Post");
-const User = require("../models/User");
+const Post = require("../models/model.post");
+const { getOrCreateUser } = require("../utils/userHelper");
 
 const getFeed = async (req, res) => {
   try {
-    const clerkId = req.auth.userId;
-
-    const user = await User.findOne({ clerkId });
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    const clerkId = req.auth?.userId;
+    if (!clerkId) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const users = [
-      ...user.following,
+    const user = await getOrCreateUser(clerkId);
+
+    const userIds = [
+      ...(user.following || []),
       user._id,
     ];
 
-    const posts = await Post.find({
-      user: {
-        $in: users,
-      },
+    let posts = await Post.find({
+      user: { $in: userIds },
     })
-      .populate("user", "username profileImage")
+      .populate("user", "username name profileImage")
       .sort({ createdAt: -1 })
-      .limit(20);
+      .limit(30);
+
+    // If feed from followed/own posts is empty, fetch general recent posts
+    if (posts.length === 0) {
+      posts = await Post.find()
+        .populate("user", "username name profileImage")
+        .sort({ createdAt: -1 })
+        .limit(30);
+    }
 
     res.json(posts);
   } catch (error) {
     console.error(error);
-
-    res.status(500).json({
-      message: "Failed to get feed",
-    });
+    res.status(500).json({ message: "Failed to get feed" });
   }
 };
 

@@ -41,4 +41,5 @@ const liveSchema = new mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model("Live", liveSchema);
+const livee= mongoose.model("Live", liveSchema);
+module.exports = livee;

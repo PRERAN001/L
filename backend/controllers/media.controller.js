@@ -1,19 +1,20 @@
-const Post = require("../models/Post");
-const User = require("../models/User");
-
+const Post = require("../models/model.post");
+const { getOrCreateUser } = require("../utils/userHelper");
+const { getAuth } = require("@clerk/express");
 const createPost = async (req, res) => {
   try {
-    const { mediaUrl, mediaType, caption } = req.body;
+    const { mediaUrl, mediaType = "image", caption = "" } = req.body;
+    const { userId, isAuthenticated } = getAuth(req);
 
-    const clerkId = req.auth.userId;
+    console.log("Authenticated:", isAuthenticated);
+    console.log("Clerk user ID:", userId);
 
-    const user = await User.findOne({ clerkId });
 
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
+
+    const user = await getOrCreateUser(userId);
 
     const post = await Post.create({
       user: user._id,
@@ -22,13 +23,11 @@ const createPost = async (req, res) => {
       caption,
     });
 
-    res.status(201).json(post);
+    const populatedPost = await Post.findById(post._id).populate("user", "username name profileImage");
+    res.status(201).json(populatedPost);
   } catch (error) {
     console.error(error);
-
-    res.status(500).json({
-      message: "Failed to create post",
-    });
+    res.status(500).json({ message: "Failed to create post" });
   }
 };
 
