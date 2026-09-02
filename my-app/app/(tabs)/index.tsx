@@ -99,6 +99,11 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Pagination State
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [loadingMore, setLoadingMore] = useState<boolean>(false);
+
   // Comments Modal State
   const [activePostForComments, setActivePostForComments] = useState<any | null>(null);
   const [commentsList, setCommentsList] = useState<any[]>([]);
@@ -114,29 +119,42 @@ export default function HomeScreen() {
         apiFetch("/stories", {}, token),
       ]);
 
-      if (
-        feedData.status === "fulfilled" &&
-        Array.isArray(feedData.value) &&
-        feedData.value.length > 0
-      ) {
-        const mapped = feedData.value.map((item: any) => ({
-          id: item._id || item.id,
-          username: item.user?.username || item.user?.name || "user",
-          profileImage:
-            item.user?.profileImage || "https://i.pravatar.cc/150?img=12",
-          postImage: item.mediaUrl,
-          likes: item.likesCount ?? item.likes?.length ?? 0,
-          isLiked: item.isLiked || false,
-          caption: item.caption || "",
-          commentsCount: item.commentsCount ?? item.comments?.length ?? 0,
-          comments: item.comments || [],
-          time: item.createdAt
-            ? new Date(item.createdAt).toLocaleDateString()
-            : "Just now",
-        }));
-        setPosts(mapped);
+      if (feedData.status === "fulfilled" && feedData.value) {
+        const response = feedData.value;
+        const fetchedPosts = Array.isArray(response)
+          ? response
+          : Array.isArray(response.posts)
+          ? response.posts
+          : [];
+
+        if (fetchedPosts.length > 0) {
+          const mapped = fetchedPosts.map((item: any) => ({
+            id: item._id || item.id,
+            username: item.user?.username || item.user?.name || "user",
+            profileImage:
+              item.user?.profileImage || "https://i.pravatar.cc/150?img=12",
+            postImage: item.mediaUrl,
+            likes: item.likesCount ?? item.likes?.length ?? 0,
+            isLiked: item.isLiked || false,
+            caption: item.caption || "",
+            commentsCount: item.commentsCount ?? item.comments?.length ?? 0,
+            comments: item.comments || [],
+            time: item.createdAt
+              ? new Date(item.createdAt).toLocaleDateString()
+              : "Just now",
+          }));
+          setPosts(mapped);
+          setNextCursor(response.nextCursor || null);
+          setHasMore(response.hasMore ?? false);
+        } else {
+          setPosts(initialMockPosts);
+          setNextCursor(null);
+          setHasMore(false);
+        }
       } else {
         setPosts(initialMockPosts);
+        setNextCursor(null);
+        setHasMore(false);
       }
 
       if (
@@ -182,6 +200,76 @@ export default function HomeScreen() {
       setRefreshing(false);
     }
   }, [getToken, user]);
+
+  const fetchMorePosts = useCallback(async () => {
+    if (!nextCursor || !hasMore || loadingMore) return;
+
+    setLoadingMore(true);
+    try {
+      const token = await getToken();
+      const res = await apiFetch(
+        `/feed?cursor=${encodeURIComponent(nextCursor)}`,
+        {},
+        token
+      );
+
+      if (res) {
+        const fetchedPosts = Array.isArray(res)
+          ? res
+          : Array.isArray(res.posts)
+          ? res.posts
+          : [];
+
+        if (fetchedPosts.length > 0) {
+          const mappedNew = fetchedPosts.map((item: any) => ({
+            id: item._id || item.id,
+            username: item.user?.username || item.user?.name || "user",
+            profileImage:
+              item.user?.profileImage || "https://i.pravatar.cc/150?img=12",
+            postImage: item.mediaUrl,
+            likes: item.likesCount ?? item.likes?.length ?? 0,
+            isLiked: item.isLiked || false,
+            caption: item.caption || "",
+            commentsCount: item.commentsCount ?? item.comments?.length ?? 0,
+            comments: item.comments || [],
+            time: item.createdAt
+              ? new Date(item.createdAt).toLocaleDateString()
+              : "Just now",
+          }));
+
+          setPosts((prevPosts) => {
+            const existingIds = new Set(prevPosts.map((p: any) => p.id));
+            const uniqueNew = mappedNew.filter((p: any) => !existingIds.has(p.id));
+            return [...prevPosts, ...uniqueNew];
+          });
+
+          setNextCursor(res.nextCursor || null);
+          setHasMore(res.hasMore ?? false);
+        } else {
+          setHasMore(false);
+          setNextCursor(null);
+        }
+      }
+    } catch (err) {
+      console.log("Error loading more feed posts:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, hasMore, loadingMore, getToken]);
+
+  const handleScroll = useCallback(
+    (event: any) => {
+      const { layoutMeasurement, contentOffset, contentSize } =
+        event.nativeEvent;
+      const isCloseToBottom =
+        layoutMeasurement.height + contentOffset.y >= contentSize.height - 300;
+
+      if (isCloseToBottom && hasMore && !loadingMore && nextCursor) {
+        fetchMorePosts();
+      }
+    },
+    [hasMore, loadingMore, nextCursor, fetchMorePosts]
+  );
 
   useEffect(() => {
     fetchFeedData();
@@ -333,6 +421,8 @@ export default function HomeScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         className="flex-1"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -378,112 +468,124 @@ export default function HomeScreen() {
           </View>
         ) : (
           /* POSTS */
-          posts.map((post) => (
-            <View
-              key={post.id}
-              className="border-b border-gray-200 pb-5"
-            >
-              {/* POST HEADER */}
-              <View className="flex-row items-center justify-between px-4 py-3">
-                <Pressable
-                  onPress={() => router.push(`/user/${post.username}`)}
-                  className="flex-row items-center"
-                >
-                  <Image
-                    source={{ uri: post.profileImage }}
-                    className="w-9 h-9 rounded-full mr-3 bg-gray-200"
-                  />
-
-                  <View>
-                    <Text className="font-semibold text-sm">
-                      {post.username}
-                    </Text>
-                    <Text className="text-xs text-gray-500">India</Text>
-                  </View>
-                </Pressable>
-
-                <Pressable>
-                  <Ionicons
-                    name="ellipsis-horizontal"
-                    size={22}
-                    color="black"
-                  />
-                </Pressable>
-              </View>
-
-              {/* POST IMAGE */}
-              <Pressable onDoubleClick={() => handleLikeToggle(post.id)}>
-                <Image
-                  source={{ uri: post.postImage }}
-                  className="w-full aspect-square bg-gray-100"
-                  resizeMode="cover"
-                />
-              </Pressable>
-
-              {/* ACTION BUTTONS */}
-              <View className="flex-row items-center justify-between px-4 pt-3">
-                <View className="flex-row items-center gap-5">
-                  <Pressable onPress={() => handleLikeToggle(post.id)}>
-                    <Ionicons
-                      name={post.isLiked ? "heart" : "heart-outline"}
-                      size={28}
-                      color={post.isLiked ? "#ef4444" : "black"}
+          <>
+            {posts.map((post) => (
+              <View
+                key={post.id}
+                className="border-b border-gray-200 pb-5"
+              >
+                {/* POST HEADER */}
+                <View className="flex-row items-center justify-between px-4 py-3">
+                  <Pressable
+                    onPress={() => router.push(`/user/${post.username}`)}
+                    className="flex-row items-center"
+                  >
+                    <Image
+                      source={{ uri: post.profileImage }}
+                      className="w-9 h-9 rounded-full mr-3 bg-gray-200"
                     />
-                  </Pressable>
 
-                  <Pressable onPress={() => openCommentsModal(post)}>
-                    <Ionicons
-                      name="chatbubble-outline"
-                      size={27}
-                      color="black"
-                    />
+                    <View>
+                      <Text className="font-semibold text-sm">
+                        {post.username}
+                      </Text>
+                      <Text className="text-xs text-gray-500">India</Text>
+                    </View>
                   </Pressable>
 
                   <Pressable>
                     <Ionicons
-                      name="paper-plane-outline"
-                      size={27}
+                      name="ellipsis-horizontal"
+                      size={22}
                       color="black"
                     />
                   </Pressable>
                 </View>
 
-                <Pressable>
-                  <Ionicons name="bookmark-outline" size={27} color="black" />
+                {/* POST IMAGE */}
+                <Pressable onPress={() => handleLikeToggle(post.id)}>
+                  <Image
+                    source={{ uri: post.postImage }}
+                    className="w-full aspect-square bg-gray-100"
+                    resizeMode="cover"
+                  />
                 </Pressable>
-              </View>
 
-              {/* LIKES */}
-              <Text className="font-semibold text-sm px-4 mt-2">
-                {post.likes.toLocaleString()} likes
-              </Text>
+                {/* ACTION BUTTONS */}
+                <View className="flex-row items-center justify-between px-4 pt-3">
+                  <View className="flex-row items-center gap-5">
+                    <Pressable onPress={() => handleLikeToggle(post.id)}>
+                      <Ionicons
+                        name={post.isLiked ? "heart" : "heart-outline"}
+                        size={28}
+                        color={post.isLiked ? "#ef4444" : "black"}
+                      />
+                    </Pressable>
 
-              {/* CAPTION */}
-              {post.caption ? (
-                <View className="flex-row px-4 mt-1">
-                  <Text className="font-semibold mr-1">{post.username}</Text>
-                  <Text className="text-sm">{post.caption}</Text>
+                    <Pressable onPress={() => openCommentsModal(post)}>
+                      <Ionicons
+                        name="chatbubble-outline"
+                        size={27}
+                        color="black"
+                      />
+                    </Pressable>
+
+                    <Pressable>
+                      <Ionicons
+                        name="paper-plane-outline"
+                        size={27}
+                        color="black"
+                      />
+                    </Pressable>
+                  </View>
+
+                  <Pressable>
+                    <Ionicons name="bookmark-outline" size={27} color="black" />
+                  </Pressable>
                 </View>
-              ) : null}
 
-              {/* COMMENTS COUNT / TRIGGER */}
-              <Pressable
-                onPress={() => openCommentsModal(post)}
-                className="px-4 mt-2"
-              >
-                <Text className="text-gray-500 text-sm">
-                  {post.commentsCount > 0
-                    ? `View all ${post.commentsCount} comments`
-                    : "Add a comment..."}
+                {/* LIKES */}
+                <Text className="font-semibold text-sm px-4 mt-2">
+                  {post.likes.toLocaleString()} likes
                 </Text>
-              </Pressable>
 
-              {/* TIME */}
-              <Text className="text-gray-400 text-[10px] uppercase px-4 mt-3">
-                {post.time}
-              </Text>
-            </View>
-          ))
+                {/* CAPTION */}
+                {post.caption ? (
+                  <View className="flex-row px-4 mt-1">
+                    <Text className="font-semibold mr-1">{post.username}</Text>
+                    <Text className="text-sm">{post.caption}</Text>
+                  </View>
+                ) : null}
+
+                {/* COMMENTS COUNT / TRIGGER */}
+                <Pressable
+                  onPress={() => openCommentsModal(post)}
+                  className="px-4 mt-2"
+                >
+                  <Text className="text-gray-500 text-sm">
+                    {post.commentsCount > 0
+                      ? `View all ${post.commentsCount} comments`
+                      : "Add a comment..."}
+                  </Text>
+                </Pressable>
+
+                {/* TIME */}
+                <Text className="text-gray-400 text-[10px] uppercase px-4 mt-3">
+                  {post.time}
+                </Text>
+              </View>
+            ))}
+
+            {/* PAGINATION LOADER */}
+            {loadingMore && (
+              <View className="py-6 items-center justify-center">
+                <ActivityIndicator size="small" color="#000" />
+                <Text className="mt-2 text-xs text-gray-500">
+                  Loading more posts...
+                </Text>
+              </View>
+            )}
+          </>
         )}
       </ScrollView>
 

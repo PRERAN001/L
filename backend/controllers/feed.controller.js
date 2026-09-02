@@ -1,66 +1,89 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-
 const getFeed = async (req, res) => {
   try {
-    const { userId, isAuthenticated } = getAuth(req);
+    const { userId } = getAuth(req);
+
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
     }
 
     const user = await getOrCreateUser(userId);
 
-    const userIds = [
-      ...(user.following || []),
-      user._id,
-    ];
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
 
-    let posts = await Post.find({
+    const cursor = req.query.cursor;
+    const userIds = [...(user.following || []), user._id];
+
+    const query = {
       user: { $in: userIds },
-    })
+    };
+
+    if (cursor) {
+      query.createdAt = {
+        $lt: new Date(cursor),
+      };
+    }
+
+    const posts = await Post.find(query)
       .populate("user", "username name profileImage")
       .populate("comments.user", "username name profileImage")
       .sort({ createdAt: -1 })
-      .limit(30);
+      .limit(limit + 1);
 
-    // If feed from followed/own posts is empty, fetch general recent posts
-    if (posts.length === 0) {
-      posts = await Post.find()
-        .populate("user", "username name profileImage")
-        .populate("comments.user", "username name profileImage")
-        .sort({ createdAt: -1 })
-        .limit(30);
-    }
+    const hasMore = posts.length > limit;
 
-    const formattedPosts = posts.map((post) => {
-      const isLiked = post.likes?.some(
-        (likeId) => likeId.toString() === user._id.toString()
-      ) || false;
+    const postsToReturn = hasMore ? posts.slice(0, limit) : posts;
+
+    const formattedPosts = postsToReturn.map((post) => {
+      const isLiked =
+        post.likes?.some(
+          (likeId) => likeId.toString() === user._id.toString(),
+        ) || false;
 
       return {
         _id: post._id,
         user: post.user,
+
         mediaUrl: post.mediaUrl,
         mediaType: post.mediaType,
         caption: post.caption,
+
         likesCount: post.likes?.length || 0,
         isLiked,
+
         commentsCount: post.comments?.length || 0,
+
         comments: (post.comments || []).map((c) => ({
           _id: c._id,
           user: c.user,
           text: c.text,
           createdAt: c.createdAt,
         })),
+
         createdAt: post.createdAt,
       };
     });
 
-    res.json(formattedPosts);
+    const nextCursor = hasMore
+      ? postsToReturn[postsToReturn.length - 1].createdAt.toISOString()
+      : null;
+
+    // 10. Send response
+    res.json({
+      posts: formattedPosts,
+      nextCursor,
+      hasMore,
+    });
   } catch (error) {
     console.error("Get feed error:", error);
-    res.status(500).json({ message: "Failed to get feed" });
+
+    res.status(500).json({
+      message: "Failed to get feed",
+    });
   }
 };
 
@@ -82,12 +105,12 @@ const toggleLikePost = async (req, res) => {
     if (!post.likes) post.likes = [];
 
     const alreadyLiked = post.likes.some(
-      (likeId) => likeId.toString() === user._id.toString()
+      (likeId) => likeId.toString() === user._id.toString(),
     );
 
     if (alreadyLiked) {
       post.likes = post.likes.filter(
-        (likeId) => likeId.toString() !== user._id.toString()
+        (likeId) => likeId.toString() !== user._id.toString(),
       );
     } else {
       post.likes.push(user._id);
@@ -107,7 +130,7 @@ const toggleLikePost = async (req, res) => {
 
 const addComment = async (req, res) => {
   try {
-        const { userId, isAuthenticated } = getAuth(req);
+    const { userId, isAuthenticated } = getAuth(req);
 
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -139,7 +162,7 @@ const addComment = async (req, res) => {
 
     const updatedPost = await Post.findById(postId).populate(
       "comments.user",
-      "username name profileImage"
+      "username name profileImage",
     );
 
     const addedComment = updatedPost.comments[updatedPost.comments.length - 1];
@@ -159,7 +182,7 @@ const getComments = async (req, res) => {
     const { postId } = req.params;
     const post = await Post.findById(postId).populate(
       "comments.user",
-      "username name profileImage"
+      "username name profileImage",
     );
 
     if (!post) {
