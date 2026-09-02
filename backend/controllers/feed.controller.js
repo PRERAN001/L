@@ -1,7 +1,11 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-const { getCachedFeed, setCachedFeed, invalidateFeedCache } = require("../utils/redis");
+const {
+  getCachedFeed,
+  setCachedFeed,
+  invalidateFeedCache,
+} = require("../utils/redis");
 
 const getFeed = async (req, res) => {
   try {
@@ -16,39 +20,53 @@ const getFeed = async (req, res) => {
     const user = await getOrCreateUser(userId);
 
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+
     const cursor = req.query.cursor;
-    const cursorKey = cursor || "initial";
 
-    // 1. Try to serve feed from Redis cache
-    const cachedFeed = await getCachedFeed(user._id.toString(), cursorKey, limit);
-    if (cachedFeed) {
-      console.log(`[REDIS CACHE HIT] User: ${user._id}, Cursor: ${cursorKey}`);
-      return res.json(cachedFeed);
-    }
+    const feedKey = `feed:${user._id}`;
 
-    const userIds = [...(user.following || []), user._id];
-
-    const query = {
-      user: { $in: userIds },
-    };
+    let postIds;
 
     if (cursor) {
-      query.createdAt = {
-        $lt: new Date(cursor),
-      };
+      postIds = await redis.zRange(feedKey, 0, -1, {
+        REV: true,
+        BY: "SCORE",
+        LIMIT: {
+          offset: 0,
+          count: limit,
+        },
+      });
+    } else {
+      postIds = await redis.zRange(feedKey, `(${cursor}`, "-inf", {
+        REV: true,
+        BY: "SCORE",
+        LIMIT: {
+          offset: 0,
+          count: limit,
+        },
+      });
     }
 
-    const posts = await Post.find(query)
+    if (postIds.length === 0) {
+      return res.json({
+        posts: [],
+        nextCursor: null,
+        hasMore: false,
+      });
+    }
+
+    const posts = await Post.find({
+      _id: { $in: postIds },
+    })
       .populate("user", "username name profileImage")
-      .populate("comments.user", "username name profileImage")
-      .sort({ createdAt: -1 })
-      .limit(limit + 1);
+      .populate("comments.user", "username name profileImage");
 
-    const hasMore = posts.length > limit;
+    const postMap = new Map(posts.map((post) => [post._id.toString(), post]));
 
-    const postsToReturn = hasMore ? posts.slice(0, limit) : posts;
+    const orderedPosts = postIds.map((id) => postMap.get(id)).filter(Boolean);
 
-    const formattedPosts = postsToReturn.map((post) => {
+    // Format posts
+    const formattedPosts = orderedPosts.map((post) => {
       const isLiked =
         post.likes?.some(
           (likeId) => likeId.toString() === user._id.toString(),
@@ -78,21 +96,18 @@ const getFeed = async (req, res) => {
       };
     });
 
-    const nextCursor = hasMore
-      ? postsToReturn[postsToReturn.length - 1].createdAt.toISOString()
-      : null;
+    // Cursor = last Redis score
+    const lastPostId = postIds[postIds.length - 1];
 
-    const responseData = {
+    const lastScore = await redis.zScore(feedKey, lastPostId);
+
+    const nextCursor = postIds.length === limit ? lastScore : null;
+
+    res.json({
       posts: formattedPosts,
       nextCursor,
-      hasMore,
-    };
-
-    // 2. Save result in Redis cache (60 seconds TTL)
-    await setCachedFeed(user._id.toString(), cursorKey, limit, responseData, 60);
-    console.log(`[REDIS CACHE MISS] Cached feed for User: ${user._id}, Cursor: ${cursorKey}`);
-
-    res.json(responseData);
+      hasMore: nextCursor !== null,
+    });
   } catch (error) {
     console.error("Get feed error:", error);
 
@@ -101,7 +116,6 @@ const getFeed = async (req, res) => {
     });
   }
 };
-
 const toggleLikePost = async (req, res) => {
   try {
     const { userId, isAuthenticated } = getAuth(req);

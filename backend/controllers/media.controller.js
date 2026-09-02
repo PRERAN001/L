@@ -1,8 +1,8 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-const { invalidateFeedCache } = require("../utils/redis");
-
+// const { invalidateFeedCache } = require("../utils/redis");
+const {redis}=require("./../redis/index")
 const createPost = async (req, res) => {
   try {
     const { mediaUrl, mediaType = "image", caption = "" } = req.body;
@@ -24,10 +24,30 @@ const createPost = async (req, res) => {
       caption,
     });
 
-    // Invalidate Redis feed cache when new post is published
-    await invalidateFeedCache();
+    const followerCount = user.followers?.length || 0;
 
-    const populatedPost = await Post.findById(post._id).populate("user", "username name profileImage");
+    const FANOUT_THRESHOLD = 500;
+
+    if (followerCount < FANOUT_THRESHOLD) {
+      const feedUsers = [...(user.followers || []), user._id];
+
+      for (const feedUserId of feedUsers) {
+        await redis.zAdd(`feed:${feedUserId}`, {
+          score: post.createdAt.getTime(),
+          value: post._id.toString(),
+        });
+      }
+    } else {
+      console.log(
+        `Large account (${followerCount} followers): skipping fanout`
+      );
+
+      //we dont fanout here we do it while fetching feed
+    }
+
+    const populatedPost = await Post.findById(post._id)
+      .populate("user", "username name profileImage");
+
     res.status(201).json(populatedPost);
   } catch (error) {
     console.error(error);

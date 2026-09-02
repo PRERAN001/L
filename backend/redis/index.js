@@ -8,4 +8,13 @@ redis.on("error", (err) => {
   console.error("Redis error:", err);
 });
 
-await redis.connect();
+const connectRedis = async () => {
+  if (!redis.isOpen) {
+    await redis.connect();
+  }
+};
+
+module.exports = {
+  redis,
+  connectRedis,
+};

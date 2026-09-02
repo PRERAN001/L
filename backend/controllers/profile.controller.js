@@ -3,6 +3,7 @@ const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
 const { invalidateFeedCache } = require("../utils/redis");
+const { redis } = require("../redis/index");
 const getMe = async (req, res) => {
   try {
     const { userId, isAuthenticated } = getAuth(req);
@@ -57,11 +58,12 @@ const getProfile = async (req, res) => {
       const currentUser = await getOrCreateUser(userId);
       if (currentUser) {
         isFollowing = user.followers?.some(
-          (fId) => fId.toString() === currentUser._id.toString()
+          (fId) => fId.toString() === currentUser._id.toString(),
         );
-        isBlocked = currentUser.blockedUsers?.some(
-          (bId) => bId.toString() === user._id.toString()
-        ) || false;
+        isBlocked =
+          currentUser.blockedUsers?.some(
+            (bId) => bId.toString() === user._id.toString(),
+          ) || false;
       }
     }
 
@@ -117,24 +119,60 @@ const toggleFollow = async (req, res) => {
     }
 
     const isFollowing = targetUser.followers?.some(
-      (fId) => fId.toString() === currentUser._id.toString()
+      (fId) => fId.toString() === currentUser._id.toString(),
     );
 
     if (isFollowing) {
-      // Unfollow
-      targetUser.followers = (targetUser.followers || []).filter(
-        (fId) => fId.toString() !== currentUser._id.toString()
-      );
-      currentUser.following = (currentUser.following || []).filter(
-        (fId) => fId.toString() !== targetUser._id.toString()
-      );
-    } else {
-      // Follow
-      if (!targetUser.followers) targetUser.followers = [];
-      if (!currentUser.following) currentUser.following = [];
-      targetUser.followers.push(currentUser._id);
-      currentUser.following.push(targetUser._id);
-    }
+  // Unfollow
+
+  targetUser.followers = (targetUser.followers || []).filter(
+    (fId) => fId.toString() !== currentUser._id.toString()
+  );
+
+  currentUser.following = (currentUser.following || []).filter(
+    (fId) => fId.toString() !== targetUser._id.toString()
+  );
+
+  // Remove target user's posts from current user's feed
+  const postsToRemove = await Post.find({
+    user: targetUser._id,
+  }).select("_id");
+
+  for (const post of postsToRemove) {
+    await redis.zRem(
+      `feed:${currentUser._id}`,
+      post._id.toString()
+    );
+  }
+
+} else {
+  // Follow
+
+  if (!targetUser.followers) {
+    targetUser.followers = [];
+  }
+
+  if (!currentUser.following) {
+    currentUser.following = [];
+  }
+
+  targetUser.followers.push(currentUser._id);
+  currentUser.following.push(targetUser._id);
+
+  // Backfill recent posts
+  const recentPosts = await Post.find({
+    user: targetUser._id,
+  })
+    .sort({ createdAt: -1 })
+    .limit(20);
+
+  for (const post of recentPosts) {
+    await redis.zAdd(`feed:${currentUser._id}`, {
+      score: post.createdAt.getTime(),
+      value: post._id.toString(),
+    });
+  }
+}
 
     await Promise.all([targetUser.save(), currentUser.save()]);
 
@@ -173,30 +211,30 @@ const toggleBlock = async (req, res) => {
     if (!currentUser.blockedUsers) currentUser.blockedUsers = [];
 
     const isBlocked = currentUser.blockedUsers.some(
-      (bId) => bId.toString() === targetUser._id.toString()
+      (bId) => bId.toString() === targetUser._id.toString(),
     );
 
     if (isBlocked) {
       // Unblock
       currentUser.blockedUsers = currentUser.blockedUsers.filter(
-        (bId) => bId.toString() !== targetUser._id.toString()
+        (bId) => bId.toString() !== targetUser._id.toString(),
       );
     } else {
       // Block (also unfollow both ways)
       currentUser.blockedUsers.push(targetUser._id);
 
       targetUser.followers = (targetUser.followers || []).filter(
-        (fId) => fId.toString() !== currentUser._id.toString()
+        (fId) => fId.toString() !== currentUser._id.toString(),
       );
       currentUser.following = (currentUser.following || []).filter(
-        (fId) => fId.toString() !== targetUser._id.toString()
+        (fId) => fId.toString() !== targetUser._id.toString(),
       );
 
       currentUser.followers = (currentUser.followers || []).filter(
-        (fId) => fId.toString() !== targetUser._id.toString()
+        (fId) => fId.toString() !== targetUser._id.toString(),
       );
       targetUser.following = (targetUser.following || []).filter(
-        (fId) => fId.toString() !== currentUser._id.toString()
+        (fId) => fId.toString() !== currentUser._id.toString(),
       );
     }
 
@@ -250,7 +288,7 @@ const updateProfile = async (req, res) => {
     const user = await User.findOneAndUpdate(
       { clerkId: userId },
       { $set: updateFields },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     if (!user) {

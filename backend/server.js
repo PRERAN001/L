@@ -4,7 +4,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const { clerkMiddleware } = require("@clerk/express");
-
+const { connectRedis } = require("./redis/index");
 const mediaRoutes = require("./routes/media.routes");
 const profileRoutes = require("./routes/profile.routes");
 const feedRoutes = require("./routes/feed.routes");
@@ -30,17 +30,22 @@ app.use("/api/stories", storyRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/live", liveRoutes);
 
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log("MongoDB connected");
-
-    const PORT = process.env.PORT || 3000;
-    const HOST = "0.0.0.0";
-    app.listen(PORT, HOST, () => {
-      console.log(`Server running on http://${HOST}:${PORT} (Access via http://192.168.29.154:${PORT})`);
+const startServer = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI).then(()=>{
+      console.log("mongo db connected")
     });
-  })
-  .catch((error) => {
-    console.error(error);
-  });
+
+    await connectRedis();
+
+    app.listen(3000, () => {
+      console.log("Server running on port 3000");
+    });
+
+  } catch (error) {
+    console.error("Server startup error:", error);
+  }
+};
+
+startServer();
+
