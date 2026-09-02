@@ -1,11 +1,9 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-const {
-  getCachedFeed,
-  setCachedFeed,
-  invalidateFeedCache,
-} = require("../utils/redis");
+
+
+const FANOUT_THRESHOLD = 10000;
 
 const getFeed = async (req, res) => {
   try {
@@ -19,89 +17,210 @@ const getFeed = async (req, res) => {
 
     const user = await getOrCreateUser(userId);
 
-    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const limit = Math.min(
+      parseInt(req.query.limit) || 20,
+      50
+    );
 
     const cursor = req.query.cursor;
 
     const feedKey = `feed:${user._id}`;
+//get posts from redis
 
-    let postIds;
+    let redisPostIds;
 
-    if (cursor) {
-      postIds = await redis.zRange(feedKey, 0, -1, {
-        REV: true,
-        BY: "SCORE",
-        LIMIT: {
-          offset: 0,
-          count: limit,
-        },
-      });
+    if (!cursor) {
+      redisPostIds = await redis.zRange(
+        feedKey,
+        0,
+        limit - 1,
+        {
+          REV: true,
+        }
+      );
     } else {
-      postIds = await redis.zRange(feedKey, `(${cursor}`, "-inf", {
-        REV: true,
-        BY: "SCORE",
-        LIMIT: {
-          offset: 0,
-          count: limit,
-        },
-      });
+      redisPostIds = await redis.zRange(
+        feedKey,
+        `(${cursor}`,
+        "-inf",
+        {
+          REV: true,
+          BY: "SCORE",
+          LIMIT: {
+            offset: 0,
+            count: limit,
+          },
+        }
+      );
     }
 
-    if (postIds.length === 0) {
-      return res.json({
-        posts: [],
-        nextCursor: null,
-        hasMore: false,
-      });
-    }
+//find large followers acc
 
-    const posts = await Post.find({
-      _id: { $in: postIds },
-    })
-      .populate("user", "username name profileImage")
-      .populate("comments.user", "username name profileImage");
+    const largeAccounts = await User.find({
+      _id: { $in: user.following || [] },
 
-    const postMap = new Map(posts.map((post) => [post._id.toString(), post]));
+      $expr: {
+        $gte: [
+          { $size: "$followers" },
+          FANOUT_THRESHOLD,
+        ],
+      },
+    }).select("_id");
 
-    const orderedPosts = postIds.map((id) => postMap.get(id)).filter(Boolean);
+    const largeAccountIds = largeAccounts.map(
+      (account) => account._id
+    );
 
-    // Format posts
-    const formattedPosts = orderedPosts.map((post) => {
-      const isLiked =
-        post.likes?.some(
-          (likeId) => likeId.toString() === user._id.toString(),
-        ) || false;
 
-      return {
-        _id: post._id,
-        user: post.user,
 
-        mediaUrl: post.mediaUrl,
-        mediaType: post.mediaType,
-        caption: post.caption,
+    let largeAccountPosts = [];
 
-        likesCount: post.likes?.length || 0,
-        isLiked,
-
-        commentsCount: post.comments?.length || 0,
-
-        comments: (post.comments || []).map((c) => ({
-          _id: c._id,
-          user: c.user,
-          text: c.text,
-          createdAt: c.createdAt,
-        })),
-
-        createdAt: post.createdAt,
+    if (largeAccountIds.length > 0) {
+      const largeAccountQuery = {
+        user: { $in: largeAccountIds },
       };
-    });
 
-    // Cursor = last Redis score
-    const lastPostId = postIds[postIds.length - 1];
+      // If cursor exists, only get posts older than cursor
+      if (cursor) {
+        largeAccountQuery.createdAt = {
+          $lt: new Date(Number(cursor)),
+        };
+      }
 
-    const lastScore = await redis.zScore(feedKey, lastPostId);
+      largeAccountPosts = await Post.find(
+        largeAccountQuery
+      )
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .populate(
+          "user",
+          "username name profileImage"
+        )
+        .populate(
+          "comments.user",
+          "username name profileImage"
+        );
+    }
 
-    const nextCursor = postIds.length === limit ? lastScore : null;
+
+
+    let redisPosts = [];
+
+    if (redisPostIds.length > 0) {
+      redisPosts = await Post.find({
+        _id: { $in: redisPostIds },
+      })
+        .populate(
+          "user",
+          "username name profileImage"
+        )
+        .populate(
+          "comments.user",
+          "username name profileImage"
+        );
+    }
+
+
+
+    const postMap = new Map(
+      redisPosts.map((post) => [
+        post._id.toString(),
+        post,
+      ])
+    );
+
+    const orderedRedisPosts = redisPostIds
+      .map((id) => postMap.get(id))
+      .filter(Boolean);
+
+    const allPosts = [
+      ...orderedRedisPosts,
+      ...largeAccountPosts,
+    ];
+
+
+    allPosts.sort(
+      (a, b) =>
+        new Date(b.createdAt) -
+        new Date(a.createdAt)
+    );
+
+
+    const uniquePosts = [];
+
+    const seenPosts = new Set();
+
+    for (const post of allPosts) {
+      const postId = post._id.toString();
+
+      if (!seenPosts.has(postId)) {
+        seenPosts.add(postId);
+        uniquePosts.push(post);
+      }
+    }
+
+
+
+    const postsToReturn = uniquePosts.slice(
+      0,
+      limit
+    );
+
+
+    const formattedPosts = postsToReturn.map(
+      (post) => {
+        const isLiked =
+          post.likes?.some(
+            (likeId) =>
+              likeId.toString() ===
+              user._id.toString()
+          ) || false;
+
+        return {
+          _id: post._id,
+
+          user: post.user,
+
+          mediaUrl: post.mediaUrl,
+          mediaType: post.mediaType,
+          caption: post.caption,
+
+          likesCount:
+            post.likes?.length || 0,
+
+          isLiked,
+
+          commentsCount:
+            post.comments?.length || 0,
+
+          comments: (post.comments || []).map(
+            (comment) => ({
+              _id: comment._id,
+              user: comment.user,
+              text: comment.text,
+              createdAt: comment.createdAt,
+            })
+          ),
+
+          createdAt: post.createdAt,
+        };
+      }
+    );
+
+    // ==========================================
+    // 10. CREATE NEXT CURSOR
+    // ==========================================
+
+    let nextCursor = null;
+
+    if (postsToReturn.length === limit) {
+      const lastPost =
+        postsToReturn[postsToReturn.length - 1];
+
+      nextCursor = new Date(
+        lastPost.createdAt
+      ).getTime();
+    }
 
     res.json({
       posts: formattedPosts,
@@ -109,7 +228,10 @@ const getFeed = async (req, res) => {
       hasMore: nextCursor !== null,
     });
   } catch (error) {
-    console.error("Get feed error:", error);
+    console.error(
+      "Get feed error:",
+      error
+    );
 
     res.status(500).json({
       message: "Failed to get feed",
