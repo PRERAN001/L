@@ -9,10 +9,12 @@ import {
   RefreshControl,
   TextInput,
   Alert,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth, useUser } from "@clerk/expo";
+import { useRouter } from "expo-router";
 import { apiFetch } from "@/lib/api";
 
 interface UserProfile {
@@ -36,8 +38,9 @@ interface UserPost {
 }
 
 export default function Profile() {
-  const { getToken } = useAuth();
+  const { getToken, signOut } = useAuth();
   const { user: clerkUser } = useUser();
+  const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -46,18 +49,22 @@ export default function Profile() {
 
   // Edit Mode state
   const [isEditing, setIsEditing] = useState(false);
+  const [editUsername, setEditUsername] = useState("");
   const [editName, setEditName] = useState("");
   const [editBio, setEditBio] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Settings Modal state
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   const fetchProfileData = useCallback(async () => {
     try {
       const token = await getToken();
       const data = await apiFetch("/profile/me", {}, token);
 
-
       if (data && data.user) {
         setProfile(data.user);
+        setEditUsername(data.user.username || "");
         setEditName(data.user.name || "");
         setEditBio(data.user.bio || "");
       }
@@ -90,13 +97,23 @@ export default function Profile() {
         {
           method: "PATCH",
           body: JSON.stringify({
+            username: editUsername,
             name: editName,
             bio: editBio,
           }),
         },
         token
       );
-      setProfile((prev) => (prev ? { ...prev, name: updated.name, bio: updated.bio } : null));
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              username: updated.username || editUsername,
+              name: updated.name,
+              bio: updated.bio,
+            }
+          : null
+      );
       setIsEditing(false);
       Alert.alert("Success", "Profile updated successfully!");
     } catch (err: any) {
@@ -106,7 +123,18 @@ export default function Profile() {
     }
   };
 
-  const username = profile?.username || clerkUser?.username || clerkUser?.firstName || "user";
+  const handleSignOut = async () => {
+    try {
+      setShowSettingsModal(false);
+      await signOut();
+      router.replace("/sign-in");
+    } catch (err: any) {
+      Alert.alert("Error", "Failed to sign out");
+    }
+  };
+
+  const username =
+    profile?.username || clerkUser?.username || clerkUser?.firstName || "user";
   const name = profile?.name || clerkUser?.fullName || "User";
   const bio = profile?.bio || "No bio yet";
   const profileImage = profile?.profileImage || clerkUser?.imageUrl || "";
@@ -122,7 +150,7 @@ export default function Profile() {
             <Ionicons name="reload-outline" size={24} color="black" />
           </Pressable>
 
-          <Pressable>
+          <Pressable onPress={() => setShowSettingsModal(true)}>
             <Ionicons name="menu-outline" size={29} color="black" />
           </Pressable>
         </View>
@@ -182,7 +210,20 @@ export default function Profile() {
               {/* BIO & EDITING */}
               {isEditing ? (
                 <View className="mt-4 bg-gray-50 p-3 rounded-xl border border-gray-200">
-                  <Text className="text-xs font-semibold text-gray-500 mb-1">NAME</Text>
+                  <Text className="text-xs font-semibold text-gray-500 mb-1">
+                    USERNAME
+                  </Text>
+                  <TextInput
+                    value={editUsername}
+                    onChangeText={setEditUsername}
+                    placeholder="Your Username"
+                    autoCapitalize="none"
+                    className="bg-white p-2.5 rounded-lg border border-gray-200 text-sm mb-3"
+                  />
+
+                  <Text className="text-xs font-semibold text-gray-500 mb-1">
+                    NAME
+                  </Text>
                   <TextInput
                     value={editName}
                     onChangeText={setEditName}
@@ -190,7 +231,9 @@ export default function Profile() {
                     className="bg-white p-2.5 rounded-lg border border-gray-200 text-sm mb-3"
                   />
 
-                  <Text className="text-xs font-semibold text-gray-500 mb-1">BIO</Text>
+                  <Text className="text-xs font-semibold text-gray-500 mb-1">
+                    BIO
+                  </Text>
                   <TextInput
                     value={editBio}
                     onChangeText={setEditBio}
@@ -204,7 +247,9 @@ export default function Profile() {
                       onPress={() => setIsEditing(false)}
                       className="flex-1 bg-gray-200 py-2.5 rounded-lg items-center"
                     >
-                      <Text className="font-semibold text-gray-700">Cancel</Text>
+                      <Text className="font-semibold text-gray-700">
+                        Cancel
+                      </Text>
                     </Pressable>
 
                     <Pressable
@@ -234,11 +279,15 @@ export default function Profile() {
                     onPress={() => setIsEditing(true)}
                     className="flex-1 bg-gray-100 rounded-lg py-2.5 items-center border border-gray-200"
                   >
-                    <Text className="font-semibold text-black">Edit profile</Text>
+                    <Text className="font-semibold text-black">
+                      Edit profile
+                    </Text>
                   </Pressable>
 
                   <Pressable className="flex-1 bg-gray-100 rounded-lg py-2.5 items-center border border-gray-200">
-                    <Text className="font-semibold text-black">Share profile</Text>
+                    <Text className="font-semibold text-black">
+                      Share profile
+                    </Text>
                   </Pressable>
                 </View>
               )}
@@ -281,7 +330,9 @@ export default function Profile() {
                 <View className="w-20 h-20 rounded-full border-2 border-black items-center justify-center mb-3">
                   <Ionicons name="camera-outline" size={40} color="black" />
                 </View>
-                <Text className="font-bold text-xl text-black">No Posts Yet</Text>
+                <Text className="font-bold text-xl text-black">
+                  No Posts Yet
+                </Text>
                 <Text className="text-gray-500 text-sm mt-1 text-center">
                   When you upload photos, they will appear here on your profile.
                 </Text>
@@ -290,6 +341,76 @@ export default function Profile() {
           </>
         )}
       </ScrollView>
+
+      {/* SETTINGS MODAL */}
+      <Modal
+        visible={showSettingsModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowSettingsModal(false)}
+      >
+        <SafeAreaView className="flex-1 bg-white">
+          {/* MODAL HEADER */}
+          <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200">
+            <Pressable
+              onPress={() => setShowSettingsModal(false)}
+              className="p-1"
+            >
+              <Ionicons name="close" size={26} color="black" />
+            </Pressable>
+            <Text className="font-bold text-lg">Settings & Activity</Text>
+            <View className="w-6" />
+          </View>
+
+          <ScrollView className="flex-1 px-4 py-2">
+            {/* SETTINGS LIST */}
+            <View className="py-3 border-b border-gray-100 flex-row items-center justify-between">
+              <View className="flex-row items-center gap-3">
+                <Ionicons name="person-outline" size={22} color="black" />
+                <Text className="text-base text-black font-medium">
+                  Account Details
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+            </View>
+
+            <View className="py-3 border-b border-gray-100 flex-row items-center justify-between">
+              <View className="flex-row items-center gap-3">
+                <Ionicons name="lock-closed-outline" size={22} color="black" />
+                <Text className="text-base text-black font-medium">
+                  Privacy & Safety
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+            </View>
+
+            <View className="py-3 border-b border-gray-100 flex-row items-center justify-between">
+              <View className="flex-row items-center gap-3">
+                <Ionicons
+                  name="notifications-outline"
+                  size={22}
+                  color="black"
+                />
+                <Text className="text-base text-black font-medium">
+                  Notifications
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+            </View>
+
+            {/* SIGN OUT BUTTON */}
+            <Pressable
+              onPress={handleSignOut}
+              className="mt-8 py-3.5 px-4 bg-red-50 rounded-xl border border-red-200 flex-row items-center justify-center gap-2"
+            >
+              <Ionicons name="log-out-outline" size={22} color="#ef4444" />
+              <Text className="text-red-500 font-bold text-base">
+                Sign Out
+              </Text>
+            </Pressable>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
