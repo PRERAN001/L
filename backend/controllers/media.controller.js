@@ -1,6 +1,8 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
+const { invalidateFeedCache } = require("../utils/redis");
+
 const createPost = async (req, res) => {
   try {
     const { mediaUrl, mediaType = "image", caption = "" } = req.body;
@@ -8,7 +10,6 @@ const createPost = async (req, res) => {
 
     console.log("Authenticated:", isAuthenticated);
     console.log("Clerk user ID:", userId);
-
 
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -22,6 +23,9 @@ const createPost = async (req, res) => {
       mediaType,
       caption,
     });
+
+    // Invalidate Redis feed cache when new post is published
+    await invalidateFeedCache();
 
     const populatedPost = await Post.findById(post._id).populate("user", "username name profileImage");
     res.status(201).json(populatedPost);

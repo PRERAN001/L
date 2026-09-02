@@ -1,6 +1,8 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
+const { getCachedFeed, setCachedFeed, invalidateFeedCache } = require("../utils/redis");
+
 const getFeed = async (req, res) => {
   try {
     const { userId } = getAuth(req);
@@ -14,8 +16,16 @@ const getFeed = async (req, res) => {
     const user = await getOrCreateUser(userId);
 
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
-
     const cursor = req.query.cursor;
+    const cursorKey = cursor || "initial";
+
+    // 1. Try to serve feed from Redis cache
+    const cachedFeed = await getCachedFeed(user._id.toString(), cursorKey, limit);
+    if (cachedFeed) {
+      console.log(`[REDIS CACHE HIT] User: ${user._id}, Cursor: ${cursorKey}`);
+      return res.json(cachedFeed);
+    }
+
     const userIds = [...(user.following || []), user._id];
 
     const query = {
@@ -72,12 +82,17 @@ const getFeed = async (req, res) => {
       ? postsToReturn[postsToReturn.length - 1].createdAt.toISOString()
       : null;
 
-    // 10. Send response
-    res.json({
+    const responseData = {
       posts: formattedPosts,
       nextCursor,
       hasMore,
-    });
+    };
+
+    // 2. Save result in Redis cache (60 seconds TTL)
+    await setCachedFeed(user._id.toString(), cursorKey, limit, responseData, 60);
+    console.log(`[REDIS CACHE MISS] Cached feed for User: ${user._id}, Cursor: ${cursorKey}`);
+
+    res.json(responseData);
   } catch (error) {
     console.error("Get feed error:", error);
 
@@ -117,6 +132,9 @@ const toggleLikePost = async (req, res) => {
     }
 
     await post.save();
+
+    // Invalidate feed cache after like toggle
+    await invalidateFeedCache();
 
     res.json({
       isLiked: !alreadyLiked,
@@ -166,6 +184,9 @@ const addComment = async (req, res) => {
     );
 
     const addedComment = updatedPost.comments[updatedPost.comments.length - 1];
+
+    // Invalidate feed cache after adding comment
+    await invalidateFeedCache();
 
     res.status(201).json({
       comment: addedComment,

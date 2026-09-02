@@ -2,6 +2,7 @@ const User = require("../models/model.user");
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
+const { invalidateFeedCache } = require("../utils/redis");
 const getMe = async (req, res) => {
   try {
     const { userId, isAuthenticated } = getAuth(req);
@@ -137,6 +138,8 @@ const toggleFollow = async (req, res) => {
 
     await Promise.all([targetUser.save(), currentUser.save()]);
 
+    await invalidateFeedCache(currentUser._id.toString());
+
     res.json({
       isFollowing: !isFollowing,
       followersCount: targetUser.followers.length,
@@ -198,6 +201,8 @@ const toggleBlock = async (req, res) => {
     }
 
     await Promise.all([currentUser.save(), targetUser.save()]);
+
+    await invalidateFeedCache(currentUser._id.toString());
 
     res.json({
       isBlocked: !isBlocked,
