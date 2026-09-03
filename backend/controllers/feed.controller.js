@@ -1,5 +1,6 @@
 const Post = require("../models/model.post");
 const User = require("../models/model.user");
+const FeedEvent = require("../models/model.feedEvent");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
 const { redis } = require("../redis");
@@ -10,6 +11,62 @@ const { extractCandidateFeatures } = require("../feed/featureService");
 const { rankCandidates } = require("../feed/rankingService");
 
 const FANOUT_THRESHOLD = 500;
+
+// ==========================================
+// DIVERSITY FILTER
+// ==========================================
+// Apply author diversity rules to the top-ranked posts:
+// - No more than 2 consecutive posts from the same author
+// - No more than 3 posts from the same author in the entire batch
+// - Preserve ranking order as much as possible
+const applyAuthorDiversity = (rankedCandidates, limit) => {
+  const result = [];
+  const authorCounts = new Map(); // authorId -> count
+  let prevAuthorId = null;
+  let prevAuthorStreak = 0;
+
+  for (const candidate of rankedCandidates) {
+    if (result.length >= limit) break;
+
+    const authorId = candidate.post.user?._id
+      ? candidate.post.user._id.toString()
+      : candidate.post.user?.toString();
+
+    if (!authorId) {
+      // No author info — include it as-is
+      result.push(candidate);
+      prevAuthorId = null;
+      prevAuthorStreak = 0;
+      continue;
+    }
+
+    const currentCount = authorCounts.get(authorId) || 0;
+
+    // Rule 1: No more than 3 posts from this author overall
+    if (currentCount >= 3) {
+      continue; // skip this post
+    }
+
+    // Rule 2: No more than 2 consecutive posts from the same author
+    if (authorId === prevAuthorId) {
+      prevAuthorStreak++;
+      if (prevAuthorStreak >= 2) {
+        continue; // skip — would make 3 in a row
+      }
+    } else {
+      prevAuthorStreak = 0;
+    }
+
+    // Post passes both rules — include it
+    result.push(candidate);
+    authorCounts.set(authorId, currentCount + 1);
+    prevAuthorId = authorId;
+  }
+
+  console.log(`[DEBUG] [feedController] Diversity filter: ${rankedCandidates.length} candidates → ${result.length} after author dedup (target: ${limit})`);
+
+  return result;
+};
 
 const invalidateFeedCache = async (userId) => {
   // Do not delete the fanout sorted set feed:${userId} as it stores feed post IDs!
@@ -109,10 +166,16 @@ const getFeed = async (req, res) => {
       candidatesWithFeatures
     );
 
-    // Take the top `limit` posts from the ranked pool for this page.
+    // ==========================================
+    // APPLY AUTHOR DIVERSITY
+    // ==========================================
+    // Apply diversity rules to prevent author spam while preserving ranking.
+    const diverseCandidates = applyAuthorDiversity(rankedCandidates, limit);
+
+    // Take the top `limit` posts from the diverse pool for this page.
     // Deeper pages are handled by advancing the timestamp cursor so candidate
     // services return a fresh, non-overlapping batch from the DB.
-    const postsToReturn = rankedCandidates
+    const postsToReturn = diverseCandidates
       .slice(0, limit)
       .map((candidate) => candidate.post);
 
@@ -245,6 +308,14 @@ const toggleLikePost = async (req, res) => {
       post.likes.push(user._id);
 
       scoreChange = 1;
+
+      // Record like event for analytics (fire-and-forget)
+      FeedEvent.create({
+        user: user._id,
+        post: postId,
+        eventType: "like",
+        timestamp: new Date(),
+      }).catch((err) => console.error("[FeedEvent] Like event error:", err.message));
     }
 
     await post.save();
@@ -319,6 +390,15 @@ const addComment = async (req, res) => {
     post.comments.push(newComment);
 
     await post.save();
+
+    // Record comment event for analytics (fire-and-forget)
+    FeedEvent.create({
+      user: user._id,
+      post: postId,
+      eventType: "comment",
+      timestamp: new Date(),
+    }).catch((err) => console.error("[FeedEvent] Comment event error:", err.message));
+
     //update the score of the trending post when comment is added
     if (redis && redis.isOpen) {
       try {

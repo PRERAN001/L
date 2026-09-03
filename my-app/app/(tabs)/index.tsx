@@ -11,6 +11,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  LayoutChangeEvent,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,6 +19,7 @@ import { useAuth, useUser } from "@clerk/expo";
 import { useRouter, useFocusEffect } from "expo-router";
 import { apiFetch } from "@/lib/api";
 import { useTheme } from "@/context/ThemeContext";
+import { useFeedTracker } from "@/hooks/useFeedTracker";
 
 export default function HomeScreen() {
   const { getToken } = useAuth();
@@ -42,7 +44,35 @@ export default function HomeScreen() {
   const [loadingComments, setLoadingComments] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
 
-  // Stable refs so fetchFeedData never gets a new identity just because
+  // ─── Feed event tracking ─────────────────────────────────────────────────
+  const { onPostViewable, onPostHidden, recordEngagement, resetTracking } =
+    useFeedTracker();
+
+  // scrollY and per-post layout positions — used to determine viewport visibility
+  const scrollY = useRef(0);
+  const scrollViewHeight = useRef(0);
+  // postLayouts: postId -> { y: number; height: number }
+  const postLayouts = useRef<Record<string, { y: number; height: number }>>({});
+
+  // Called on every scroll event — checks which posts entered/left the viewport
+  const checkViewability = useCallback(() => {
+    const top = scrollY.current;
+    const bottom = top + scrollViewHeight.current;
+    Object.entries(postLayouts.current).forEach(([postId, layout]) => {
+      const postTop = layout.y;
+      const postBottom = layout.y + layout.height;
+      // A post is "visible" when at least 50% of it overlaps with the viewport
+      const overlap = Math.min(postBottom, bottom) - Math.max(postTop, top);
+      const isVisible = overlap >= layout.height * 0.5;
+      if (isVisible) {
+        onPostViewable(postId);
+      } else {
+        onPostHidden(postId);
+      }
+    });
+  }, [onPostViewable, onPostHidden]);
+
+  // ─── Stable refs so fetchFeedData never gets a new identity just because ──
   // Clerk re-issued the user/getToken object between renders.
   const getTokenRef = useRef(getToken);
   const userRef = useRef(user);
@@ -82,10 +112,14 @@ export default function HomeScreen() {
               : "Just now",
           }));
           setPosts(mapped);
+          resetTracking();           // clear stale view timers for the old batch
+          postLayouts.current = {};  // reset layout cache
           setNextCursor(response.nextCursor || null);
           setHasMore(response.hasMore ?? false);
         } else {
           setPosts([]);
+          resetTracking();
+          postLayouts.current = {};
           setNextCursor(null);
           setHasMore(false);
         }
@@ -192,14 +226,18 @@ export default function HomeScreen() {
     (event: any) => {
       const { layoutMeasurement, contentOffset, contentSize } =
         event.nativeEvent;
+
+      scrollY.current = contentOffset.y;
+      scrollViewHeight.current = layoutMeasurement.height;
+      checkViewability();
+
       const isCloseToBottom =
         layoutMeasurement.height + contentOffset.y >= contentSize.height - 300;
-
       if (isCloseToBottom && hasMore && !loadingMore && nextCursor) {
         fetchMorePosts();
       }
     },
-    [hasMore, loadingMore, nextCursor, fetchMorePosts]
+    [hasMore, loadingMore, nextCursor, fetchMorePosts, checkViewability]
   );
 
   useFocusEffect(
@@ -215,6 +253,9 @@ export default function HomeScreen() {
 
   // LIKE TOGGLE HANDLER
   const handleLikeToggle = async (postId: string) => {
+    // Track like engagement event (also suppresses skip for this post)
+    recordEngagement(postId, "like");
+
     setPosts((prevPosts) =>
       prevPosts.map((p) => {
         if (p.id === postId) {
@@ -259,6 +300,9 @@ export default function HomeScreen() {
   // ADD COMMENT HANDLER
   const handleAddComment = async () => {
     if (!commentInput.trim() || !activePostForComments) return;
+
+    // Track comment engagement event (also suppresses skip for this post)
+    recordEngagement(activePostForComments.id, "comment");
 
     const textToSend = commentInput.trim();
     setCommentInput("");
@@ -346,6 +390,9 @@ export default function HomeScreen() {
         className="flex-1"
         onScroll={handleScroll}
         scrollEventThrottle={16}
+        onLayout={(e: LayoutChangeEvent) => {
+          scrollViewHeight.current = e.nativeEvent.layout.height;
+        }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -408,6 +455,14 @@ export default function HomeScreen() {
                 key={post.id}
                 style={{ borderBottomColor: colors.border }}
                 className="border-b pb-5"
+                onLayout={(e: LayoutChangeEvent) => {
+                  // Store this post's Y offset and height so handleScroll
+                  // can work out whether it's inside the viewport.
+                  postLayouts.current[post.id] = {
+                    y: e.nativeEvent.layout.y,
+                    height: e.nativeEvent.layout.height,
+                  };
+                }}
               >
                 {/* POST HEADER */}
                 <View className="flex-row items-center justify-between px-4 py-3">

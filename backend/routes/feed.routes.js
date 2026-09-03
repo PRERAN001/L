@@ -6,10 +6,12 @@ const {
   getComments,
   addComment,
 } = require("../controllers/feed.controller");
+const { recordEvents } = require("../controllers/feedEvent.controller");
 
 const router = express.Router();
 
 router.get("/", auth, getFeed);
+router.post("/events", auth, recordEvents);       // batch event ingestion
 router.post("/:postId/like", auth, toggleLikePost);
 router.get("/:postId/comments", auth, getComments);
 router.post("/:postId/comments", auth, addComment);
