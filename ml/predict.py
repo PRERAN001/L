@@ -1,61 +1,49 @@
 import numpy as np
 import torch
-
-from model import FeedRanker
-
+import json
+from model import MultiObjectiveFeedRanker
 
 # ==========================================
 # CONFIG
 # ==========================================
 
 MODEL_FILE = "data/feed_ranker.pt"
-
 SCALER_FILE = "data/scaler.npy"
 
-
 # ==========================================
-# LOAD MODEL
+# LOAD MODEL & SCALER
 # ==========================================
 
-checkpoint = torch.load(
-    MODEL_FILE,
-    map_location="cpu"
-)
+checkpoint = torch.load(MODEL_FILE, map_location="cpu")
+input_size = checkpoint.get("input_size", 5)
+output_size = checkpoint.get("output_size", 4)
+target_names = checkpoint.get("target_names", ["like", "comment", "share", "view"])
 
-input_size = checkpoint["input_size"]
-
-model = FeedRanker(
-    input_size=input_size
-)
-
-model.load_state_dict(
-    checkpoint["model_state_dict"]
-)
-
+model = MultiObjectiveFeedRanker(input_size=input_size, output_size=output_size)
+model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
-
-# ==========================================
-# LOAD SCALER
-# ==========================================
-
-scaler = np.load(
-    SCALER_FILE,
-    allow_pickle=True
-).item()
+scaler = np.load(SCALER_FILE, allow_pickle=True).item()
 
 
 # ==========================================
-# FUNCTION
+# MULTI-OBJECTIVE PREDICTION FUNCTION
 # ==========================================
 
-def predict_score(
+def predict_multi_objective(
     likes,
     comments,
     post_age_hours,
-    is_following_author,
-    source
+    is_following,
+    source,
+    user_id=None,
+    post_id=None,
+    weights=None
 ):
+    """
+    Predicts 4 multi-objective probabilities (like, comment, share, view)
+    and computes a weighted expectation score for feed reranking.
+    """
 
     source_mapping = {
         "following": 0,
@@ -63,73 +51,76 @@ def predict_score(
         "exploration": 2
     }
 
-    source_value = source_mapping[
-        source
-    ]
+    source_value = source_mapping.get(source, 0) if isinstance(source, str) else source
 
-
-    # ------------------------------
-    # Create feature vector
-    # ------------------------------
-
+    # 1. Input feature vector (5 inputs)
     features = np.array([
         likes,
         comments,
         post_age_hours,
-        is_following_author,
+        is_following,
         source_value
     ], dtype=np.float32)
 
+    # 2. Normalize features using dataset scaler
+    features_scaled = (features - scaler["mean"]) / scaler["scale"]
 
-    # ------------------------------
-    # Normalize
-    # ------------------------------
+    # 3. Convert to PyTorch tensor
+    x = torch.tensor(features_scaled, dtype=torch.float32).unsqueeze(0)
 
-    features = (
-        features - scaler["mean"]
-    ) / scaler["scale"]
-
-
-    # ------------------------------
-    # Convert to tensor
-    # ------------------------------
-
-    x = torch.tensor(
-        features,
-        dtype=torch.float32
-    ).unsqueeze(0)
-
-
-    # ------------------------------
-    # Model prediction
-    # ------------------------------
-
+    # 4. Multi-Objective Model Inference
     with torch.no_grad():
+        logits = model(x) # Output shape: (1, 4)
+        probs = torch.sigmoid(logits).squeeze(0).numpy()
 
-        logit = model(x)
+    p_like = float(probs[0])
+    p_comment = float(probs[1])
+    p_share = float(probs[2])
+    p_view = float(probs[3])
 
-        probability = torch.sigmoid(
-            logit
-        )
+    # Default multi-objective value weights for feed reranking
+    default_weights = {
+        "like": 15.0,
+        "comment": 25.0,
+        "share": 35.0,
+        "view": 5.0
+    }
+    w = weights if weights else default_weights
+
+    # Multi-Objective expected value score for feed reranking
+    rerank_score = (
+        p_like * w.get("like", 15.0) +
+        p_comment * w.get("comment", 25.0) +
+        p_share * w.get("share", 35.0) +
+        p_view * w.get("view", 5.0)
+    )
+
+    return {
+        "userId": user_id,
+        "postId": post_id,
+        "predictions": {
+            "like": round(p_like, 4),
+            "comment": round(p_comment, 4),
+            "share": round(p_share, 4),
+            "view": round(p_view, 4),
+        },
+        "multiObjectiveScore": round(rerank_score, 4)
+    }
 
 
-    return probability.item()
+if __name__ == "__main__":
+    print("--- MULTI-OBJECTIVE PREDICTION DEMO ---")
+    
+    # Test case matching user request:
+    # userId: U123, postId: P456, likes: 120, comments: 14, postAgeHours: 2.3, isFollowing: 1, source: following
+    sample_result = predict_multi_objective(
+        user_id="U123",
+        post_id="P456",
+        likes=120,
+        comments=14,
+        post_age_hours=2.3,
+        is_following=1,
+        source="following"
+    )
 
-
-# ==========================================
-# TEST
-# ==========================================
-
-score = predict_score(
-    likes=120,
-    comments=10,
-    post_age_hours=2.3,
-    is_following_author=1,
-    source="following"
-)
-
-
-print(
-    f"Predicted engagement probability: "
-    f"{score:.4f}"
-)
+    print(json.dumps(sample_result, indent=2))

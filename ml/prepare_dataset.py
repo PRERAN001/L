@@ -20,10 +20,10 @@ OUTPUT_SCALER = "data/scaler.npy"
 
 df = pd.read_csv(INPUT_FILE)
 
-print("Loaded events:")
+print("Loaded Multi-Objective dataset head:")
 print(df.head())
 
-print("\nTotal events:", len(df))
+print("\nTotal events/samples:", len(df))
 
 
 # ==========================================
@@ -36,42 +36,43 @@ source_mapping = {
     "exploration": 2
 }
 
-df["source"] = df["source"].map(source_mapping)
+if "source" in df.columns:
+    df["source"] = df["source"].astype(str).map(source_mapping).fillna(0)
+
+if "isFollowingAuthor" in df.columns and "isFollowing" not in df.columns:
+    df["isFollowing"] = df["isFollowingAuthor"]
 
 
 # ==========================================
-# CREATE LABEL
-# ==========================================
-
-positive_events = {
-    "like",
-    "comment",
-    "save",
-    "share"
-}
-
-df["label"] = df["eventType"].apply(
-    lambda event: 1 if event in positive_events else 0
-)
-
-
-# ==========================================
-# FEATURES
+# FEATURES (5 INPUTS)
 # ==========================================
 
 feature_columns = [
     "likes",
     "comments",
     "postAgeHours",
-    "isFollowingAuthor",
+    "isFollowing",
     "source"
 ]
 
 X = df[feature_columns].values.astype(np.float32)
 
-y = df["label"].values.astype(np.float32)
 
-y = y.reshape(-1, 1)
+# ==========================================
+# MULTI-OBJECTIVE TARGET LABELS (4 OUTPUTS)
+# [like, comment, share, view]
+# ==========================================
+
+target_columns = ["like", "comment", "share", "view"]
+
+# If columns don't exist directly (legacy CSV format), construct them from eventType
+if not all(col in df.columns for col in target_columns):
+    df["like"] = (df["eventType"] == "like").astype(np.float32)
+    df["comment"] = (df["eventType"] == "comment").astype(np.float32)
+    df["share"] = (df["eventType"] == "share").astype(np.float32)
+    df["view"] = (df["eventType"].isin(["view", "like", "comment", "save", "share"])).astype(np.float32)
+
+y = df[target_columns].values.astype(np.float32)  # Shape: (N, 4)
 
 
 # ==========================================
@@ -79,7 +80,6 @@ y = y.reshape(-1, 1)
 # ==========================================
 
 scaler = StandardScaler()
-
 X = scaler.fit_transform(X)
 
 
@@ -88,7 +88,6 @@ X = scaler.fit_transform(X)
 # ==========================================
 
 np.save(OUTPUT_FEATURES, X)
-
 np.save(OUTPUT_LABELS, y)
 
 np.save(
@@ -101,15 +100,15 @@ np.save(
 )
 
 
-print("\nDataset created.")
+print("\nMulti-Objective Dataset Created Successfully.")
+print("X shape (inputs):", X.shape)
+print("y shape (targets: [like, comment, share, view]):", y.shape)
 
-print("X shape:", X.shape)
+print("\nInput Features:", feature_columns)
+print("Target Outcomes:", target_columns)
 
-print("y shape:", y.shape)
-
-print("\nFeatures:")
-print(feature_columns)
-
-print("\nPositive samples:", int(y.sum()))
-
-print("Negative samples:", int(len(y) - y.sum()))
+print("\nPositive Label Counts Per Objective:")
+for idx, col in enumerate(target_columns):
+    pos_count = int(y[:, idx].sum())
+    total_count = len(y)
+    print(f" - {col:8s}: {pos_count} positive / {total_count - pos_count} negative ({pos_count / total_count * 100:.1f}%)")

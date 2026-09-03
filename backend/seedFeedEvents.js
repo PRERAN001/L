@@ -30,10 +30,10 @@ async function seedFeedEvents() {
       return;
     }
 
-    // 3. GENERATE SYNTHETIC FEED EVENTS
+    // 3. GENERATE SYNTHETIC MULTI-OBJECTIVE FEED EVENTS
     const eventsToCreate = [];
     const csvRows = [
-      "likes,comments,postAgeHours,isFollowingAuthor,source,eventType"
+      "userId,postId,likes,comments,postAgeHours,isFollowing,source,like,comment,share,view"
     ];
 
     const now = Date.now();
@@ -43,13 +43,12 @@ async function seedFeedEvents() {
         (user.following || []).map((id) => id.toString())
       );
 
-      // Randomly sample posts for this user to interact with
       for (const post of posts) {
         const isSelf = post.user.toString() === user._id.toString();
-        const isFollowingAuthor = isSelf || followingSet.has(post.user.toString()) ? 1 : 0;
+        const isFollowing = isSelf || followingSet.has(post.user.toString()) ? 1 : 0;
 
         let source = "exploration";
-        if (isFollowingAuthor) {
+        if (isFollowing) {
           source = "following";
         } else if (Math.random() < 0.3) {
           source = "trending";
@@ -60,94 +59,84 @@ async function seedFeedEvents() {
         const postAgeMs = now - new Date(post.createdAt).getTime();
         const postAgeHours = Math.max(0.1, postAgeMs / (1000 * 60 * 60));
 
-        // Interaction probability based on features
-        let engagementProb = 0.15;
-        if (isFollowingAuthor) engagementProb += 0.35;
-        if (postAgeHours < 24) engagementProb += 0.25;
-        if (likes > 10) engagementProb += 0.15;
+        // Base probability of engagement
+        let probFactor = 0.15;
+        if (isFollowing) probFactor += 0.35;
+        if (postAgeHours < 24) probFactor += 0.25;
+        if (likes > 10) probFactor += 0.15;
 
-        // 75% chance that user encounters this post in feed
+        // 75% chance user encounters this post in feed
         if (Math.random() > 0.75) continue;
 
         const eventTime = new Date(
           new Date(post.createdAt).getTime() + Math.random() * Math.max(1000, now - new Date(post.createdAt).getTime())
         );
 
-        // 1. Impression event
+        // Always record impression event in DB
         eventsToCreate.push({
           user: user._id,
           post: post._id,
           eventType: "impression",
           timestamp: eventTime,
         });
-        csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},impression`);
 
-        // Check if positive engagement or skip
-        const isPositive = Math.random() < engagementProb;
+        // Determine 4 multi-objective outcome labels for this user-post interaction
+        const isViewed = Math.random() < Math.min(0.95, probFactor + 0.2);
+        const isLiked = isViewed && Math.random() < Math.min(0.85, probFactor + 0.1);
+        const isCommented = isLiked && Math.random() < 0.35;
+        const isShared = isViewed && Math.random() < 0.20;
 
-        if (isPositive) {
-          // View event
+        const targetLike = isLiked ? 1 : 0;
+        const targetComment = isCommented ? 1 : 0;
+        const targetShare = isShared ? 1 : 0;
+        const targetView = isViewed ? 1 : 0;
+
+        // Record granular events into MongoDB for telemetry tracking
+        if (isViewed) {
           eventsToCreate.push({
             user: user._id,
             post: post._id,
             eventType: "view",
             timestamp: new Date(eventTime.getTime() + 2000),
           });
-          csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},view`);
-
-          // Like event
-          if (Math.random() < 0.65) {
-            eventsToCreate.push({
-              user: user._id,
-              post: post._id,
-              eventType: "like",
-              timestamp: new Date(eventTime.getTime() + 5000),
-            });
-            csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},like`);
-          }
-
-          // Comment event
-          if (Math.random() < 0.35) {
-            eventsToCreate.push({
-              user: user._id,
-              post: post._id,
-              eventType: "comment",
-              timestamp: new Date(eventTime.getTime() + 15000),
-            });
-            csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},comment`);
-          }
-
-          // Save event
-          if (Math.random() < 0.25) {
-            eventsToCreate.push({
-              user: user._id,
-              post: post._id,
-              eventType: "save",
-              timestamp: new Date(eventTime.getTime() + 20000),
-            });
-            csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},save`);
-          }
-
-          // Share event
-          if (Math.random() < 0.20) {
-            eventsToCreate.push({
-              user: user._id,
-              post: post._id,
-              eventType: "share",
-              timestamp: new Date(eventTime.getTime() + 25000),
-            });
-            csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},share`);
-          }
-        } else {
-          // Skip event
+        }
+        if (isLiked) {
+          eventsToCreate.push({
+            user: user._id,
+            post: post._id,
+            eventType: "like",
+            timestamp: new Date(eventTime.getTime() + 5000),
+          });
+        }
+        if (isCommented) {
+          eventsToCreate.push({
+            user: user._id,
+            post: post._id,
+            eventType: "comment",
+            timestamp: new Date(eventTime.getTime() + 15000),
+          });
+        }
+        if (isShared) {
+          eventsToCreate.push({
+            user: user._id,
+            post: post._id,
+            eventType: "share",
+            timestamp: new Date(eventTime.getTime() + 25000),
+          });
+        }
+        if (!isViewed && !isLiked) {
           eventsToCreate.push({
             user: user._id,
             post: post._id,
             eventType: "skip",
             timestamp: new Date(eventTime.getTime() + 1000),
           });
-          csvRows.push(`${likes},${comments},${postAgeHours.toFixed(2)},${isFollowingAuthor},${source},skip`);
         }
+
+        // Add Multi-Objective ML Session Row to CSV
+        csvRows.push(
+          `${user._id.toString()},${post._id.toString()},${likes},${comments},${postAgeHours.toFixed(2)},${isFollowing},${source},${targetLike},${targetComment},${targetShare},${targetView}`
+        );
       }
     }
 
@@ -163,7 +152,7 @@ async function seedFeedEvents() {
 
     const csvPath = path.join(mlDataDir, "events.csv");
     fs.writeFileSync(csvPath, csvRows.join("\n"));
-    console.log(`Exported dataset to ${csvPath} (${csvRows.length - 1} records).`);
+    console.log(`Exported Multi-Objective dataset to ${csvPath} (${csvRows.length - 1} records).`);
 
     // SUMMARY BREAKDOWN
     const breakdown = {};
@@ -171,11 +160,12 @@ async function seedFeedEvents() {
       breakdown[e.eventType] = (breakdown[e.eventType] || 0) + 1;
     }
 
-    console.log("\n--- FEED EVENT SEED SUMMARY ---");
-    console.log(`Total Events Inserted: ${eventsToCreate.length}`);
+    console.log("\n--- MULTI-OBJECTIVE FEED EVENT SEED SUMMARY ---");
+    console.log(`Total DB Events Inserted: ${eventsToCreate.length}`);
     console.log("Event Type Breakdown:", breakdown);
+    console.log(`Total ML Training Samples (CSV): ${csvRows.length - 1}`);
     console.log("CSV Dataset Path:", csvPath);
-    console.log("-------------------------------\n");
+    console.log("------------------------------------------------\n");
 
   } catch (error) {
     console.error("Error seeding feed events:", error);

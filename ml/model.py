@@ -2,9 +2,25 @@ import torch
 import torch.nn as nn
 
 
-class FeedRanker(nn.Module):
+class MultiObjectiveFeedRanker(nn.Module):
+    """
+    Multi-Objective Feed Ranker Neural Network.
+    
+    Inputs (5):
+        - likes
+        - comments
+        - postAgeHours
+        - isFollowing
+        - source
+        
+    Outputs (4 logits/probabilities):
+        - like
+        - comment
+        - share
+        - view
+    """
 
-    def __init__(self, input_size):
+    def __init__(self, input_size=5, output_size=4):
         super().__init__()
 
         self.network = nn.Sequential(        
@@ -14,8 +30,12 @@ class FeedRanker(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Linear(64, output_size)  # Output size = 4 (like, comment, share, view)
         )
 
     def forward(self, x):
         return self.network(x)
+
+
+# Alias for backward compatibility
+FeedRanker = MultiObjectiveFeedRanker
