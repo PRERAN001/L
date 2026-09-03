@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -15,80 +15,9 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth, useUser } from "@clerk/expo";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { apiFetch } from "@/lib/api";
 import { useTheme } from "@/context/ThemeContext";
-
-const initialMockStories = [
-  {
-    id: "s0",
-    username: "your_story",
-    image: "https://i.pravatar.cc/150?img=12",
-    own: true,
-  },
-  {
-    id: "s1",
-    username: "alex",
-    image: "https://i.pravatar.cc/150?img=1",
-  },
-  {
-    id: "s2",
-    username: "john",
-    image: "https://i.pravatar.cc/150?img=3",
-  },
-  {
-    id: "s3",
-    username: "sarah",
-    image: "https://i.pravatar.cc/150?img=5",
-  },
-];
-
-const initialMockPosts = [
-  {
-    id: "p1",
-    username: "alex",
-    profileImage: "https://i.pravatar.cc/150?img=1",
-    postImage: "https://picsum.photos/700/700?random=10",
-    likes: 1248,
-    isLiked: false,
-    caption: "Beautiful day 🌅",
-    commentsCount: 2,
-    comments: [
-      {
-        _id: "c1",
-        user: { username: "sarah", name: "Sarah", profileImage: "https://i.pravatar.cc/150?img=5" },
-        text: "Amazing shot!",
-        createdAt: new Date().toISOString(),
-      },
-      {
-        _id: "c2",
-        user: { username: "john", name: "John", profileImage: "https://i.pravatar.cc/150?img=3" },
-        text: "Love the view! 🔥",
-        createdAt: new Date().toISOString(),
-      },
-    ],
-    time: "2 hours ago",
-  },
-  {
-    id: "p2",
-    username: "sarah",
-    profileImage: "https://i.pravatar.cc/150?img=5",
-    postImage: "https://picsum.photos/700/700?random=20",
-    likes: 892,
-    isLiked: false,
-    caption: "Weekend vibes ✨",
-    commentsCount: 1,
-    comments: [
-      {
-        _id: "c3",
-        user: { username: "alex", name: "Alex", profileImage: "https://i.pravatar.cc/150?img=1" },
-        text: "Enjoy your weekend! 🙌",
-        createdAt: new Date().toISOString(),
-      },
-    ],
-    time: "5 hours ago",
-  },
-];
 
 export default function HomeScreen() {
   const { getToken } = useAuth();
@@ -113,9 +42,16 @@ export default function HomeScreen() {
   const [loadingComments, setLoadingComments] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
 
+  // Stable refs so fetchFeedData never gets a new identity just because
+  // Clerk re-issued the user/getToken object between renders.
+  const getTokenRef = useRef(getToken);
+  const userRef = useRef(user);
+  getTokenRef.current = getToken;
+  userRef.current = user;
+
   const fetchFeedData = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = await getTokenRef.current();
       const [feedData, storiesData] = await Promise.allSettled([
         apiFetch("/feed", {}, token),
         apiFetch("/stories", {}, token),
@@ -149,66 +85,59 @@ export default function HomeScreen() {
           setNextCursor(response.nextCursor || null);
           setHasMore(response.hasMore ?? false);
         } else {
-          setPosts(initialMockPosts);
+          setPosts([]);
           setNextCursor(null);
           setHasMore(false);
         }
       } else {
-        setPosts(initialMockPosts);
         setNextCursor(null);
         setHasMore(false);
       }
 
-      if (
-        storiesData.status === "fulfilled" &&
-        Array.isArray(storiesData.value) &&
-        storiesData.value.length > 0
-      ) {
-        const mappedStories = storiesData.value.map((item: any) => ({
-          id: item._id || item.id,
-          username: item.user?.username || "user",
-          image:
-            item.user?.profileImage ||
-            item.mediaUrl ||
-            "https://i.pravatar.cc/150?img=12",
-          own: false,
-        }));
-        setStories([
-          {
-            id: "me",
-            username: "Your Story",
-            image: user?.imageUrl || "https://i.pravatar.cc/150?img=12",
-            own: true,
-          },
-          ...mappedStories,
-        ]);
-      } else {
-        setStories([
-          {
-            id: "me",
-            username: "Your Story",
-            image: user?.imageUrl || "https://i.pravatar.cc/150?img=12",
-            own: true,
-          },
-          ...initialMockStories.slice(1),
-        ]);
-      }
+      const responseStories =
+        storiesData.status === "fulfilled"
+          ? Array.isArray(storiesData.value)
+          ? storiesData.value
+          : Array.isArray(storiesData.value?.stories)
+          ? storiesData.value.stories
+          : []
+          : [];
+
+      const mappedStories = responseStories.map((item: any) => ({
+        id: item._id || item.id,
+        username: item.user?.username || "user",
+        image:
+          item.user?.profileImage ||
+          item.mediaUrl ||
+          "https://i.pravatar.cc/150?img=12",
+        own: false,
+      }));
+
+      setStories([
+        {
+          id: "me",
+          username: "Your Story",
+          image: userRef.current?.imageUrl || "https://i.pravatar.cc/150?img=12",
+          own: true,
+        },
+        ...mappedStories,
+      ]);
     } catch (err) {
       console.log("Error loading feed:", err);
-      setPosts(initialMockPosts);
-      setStories(initialMockStories);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [getToken, user]);
+  // Empty dep array: refs always hold the latest values — no stale closure risk,
+  // and useFocusEffect won't re-fire just because Clerk re-issued user/getToken.
+  }, []);
 
   const fetchMorePosts = useCallback(async () => {
     if (!nextCursor || !hasMore || loadingMore) return;
 
     setLoadingMore(true);
     try {
-      const token = await getToken();
+      const token = await getTokenRef.current();
       const res = await apiFetch(
         `/feed?cursor=${encodeURIComponent(nextCursor)}`,
         {},
@@ -257,7 +186,7 @@ export default function HomeScreen() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextCursor, hasMore, loadingMore, getToken]);
+  }, [nextCursor, hasMore, loadingMore]);
 
   const handleScroll = useCallback(
     (event: any) => {
@@ -273,9 +202,11 @@ export default function HomeScreen() {
     [hasMore, loadingMore, nextCursor, fetchMorePosts]
   );
 
-  useEffect(() => {
-    fetchFeedData();
-  }, [fetchFeedData]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchFeedData();
+    }, [fetchFeedData])
+  );
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -469,7 +400,7 @@ export default function HomeScreen() {
               Loading feed...
             </Text>
           </View>
-        ) : (
+        ) : posts.length > 0 ? (
           /* POSTS */
           <>
             {posts.map((post) => (
@@ -591,6 +522,16 @@ export default function HomeScreen() {
               </View>
             )}
           </>
+        ) : (
+          <View className="py-20 items-center justify-center px-4">
+            <Ionicons name="images-outline" size={48} color={colors.subtext} />
+            <Text style={{ color: colors.text }} className="mt-3 font-bold text-lg">
+              No posts in feed yet
+            </Text>
+            <Text style={{ color: colors.subtext }} className="mt-1 text-sm text-center">
+              Share a post or follow others to see photos here.
+            </Text>
+          </View>
         )}
       </ScrollView>
 

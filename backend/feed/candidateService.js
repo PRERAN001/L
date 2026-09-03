@@ -1,6 +1,6 @@
 const Post = require("../models/model.post");
 const User = require("../models/model.user");
-const { redis } = require("../utils/redis");
+const { redis } = require("../redis/index");
 
 const FANOUT_THRESHOLD = 500;
 
@@ -9,44 +9,58 @@ const generateFollowingCandidates = async ({
   cursor,
   limit,
 }) => {
-  const candidateLimit = limit * 2;
+  console.log(`[DEBUG] [candidateService] Starting generateFollowingCandidates. User ID: ${user._id}, cursor: ${cursor}, limit: ${limit}`);
+
+  const candidateLimit = limit ? limit * 2 : 100;
 
   const feedKey = `feed:${user._id}`;
-    //fetching the feed from the redis  section 1
 
   let redisPostIds = [];
 
-  if (!cursor) {
-    redisPostIds = await redis.zRange(
-      feedKey,
-      0,
-      candidateLimit - 1,
-      {
-        REV: true,
+  if (redis && redis.isOpen) {
+    try {
+    // cursor is a timestamp string (ms) when paginating; null on first load
+    if (!cursor || isNaN(Number(cursor)) || Number(cursor) < 1000000000000) {
+        redisPostIds = await redis.zRange(
+          feedKey,
+          0,
+          candidateLimit - 1,
+          {
+            REV: true,
+          }
+        );
+      } else {
+        redisPostIds = await redis.zRange(
+          feedKey,
+          `(${cursor}`,
+          "-inf",
+          {
+            REV: true,
+            BY: "SCORE",
+            LIMIT: {
+              offset: 0,
+              count: candidateLimit,
+            },
+          }
+        );
       }
-    );
-  } else {
-    redisPostIds = await redis.zRange(
-      feedKey,
-      `(${cursor}`,
-      "-inf",
-      {
-        REV: true,
-        BY: "SCORE",
-        LIMIT: {
-          offset: 0,
-          count: candidateLimit,
-        },
-      }
-    );
+      console.log(`[DEBUG] [candidateService] Redis returned ${redisPostIds.length} candidate post IDs.`);
+    } catch (err) {
+      console.warn(
+        "Redis zRange warning in generateFollowingCandidates:",
+        err.message
+      );
+    }
   }
 
+  // ==========================================
+  // 2. LARGE ACCOUNTS (FANOUT ON READ)
+  // ==========================================
 
   const largeAccounts = await User.find({
     _id: {
       $in: user.following || [],
     },
-
     $expr: {
       $gte: [
         {
@@ -61,10 +75,6 @@ const generateFollowingCandidates = async ({
     (account) => account._id
   );
 
-  // ==========================================
-  // 3. POSTS FROM LARGE ACCOUNTS
-  // ==========================================
-
   let largeAccountPosts = [];
 
   if (largeAccountIds.length > 0) {
@@ -74,9 +84,10 @@ const generateFollowingCandidates = async ({
       },
     };
 
-    if (cursor) {
+    const tsMs = Number(cursor);
+    if (cursor && !isNaN(tsMs) && tsMs > 1000000000000) {
       query.createdAt = {
-        $lt: new Date(Number(cursor)),
+        $lt: new Date(tsMs),
       };
     }
 
@@ -94,6 +105,47 @@ const generateFollowingCandidates = async ({
         "username name profileImage"
       );
   }
+
+  console.log(`[DEBUG] [candidateService] Found ${largeAccountPosts.length} posts from large accounts.`);
+
+  // ==========================================
+  // 3. DIRECT MONGODB POSTS (FOLLOWING + SELF)
+  // ==========================================
+  // Guarantees that user's own posts & followed user posts are candidate-ready
+
+  const followingAndSelfIds = [
+    ...(user.following || []),
+    user._id,
+  ];
+
+  const dbQuery = {
+    user: {
+      $in: followingAndSelfIds,
+    },
+  };
+
+  const tsMs2 = Number(cursor);
+  if (cursor && !isNaN(tsMs2) && tsMs2 > 1000000000000) {
+    dbQuery.createdAt = {
+      $lt: new Date(tsMs2),
+    };
+  }
+
+  const directFollowingPosts = await Post.find(dbQuery)
+    .sort({
+      createdAt: -1,
+    })
+    .limit(candidateLimit)
+    .populate(
+      "user",
+      "username name profileImage"
+    )
+    .populate(
+      "comments.user",
+      "username name profileImage"
+    );
+
+  console.log(`[DEBUG] [candidateService] Found ${directFollowingPosts.length} direct following/self posts from MongoDB.`);
 
   // ==========================================
   // 4. GET REDIS POSTS FROM MONGODB
@@ -138,6 +190,7 @@ const generateFollowingCandidates = async ({
 
   const allPosts = [
     ...orderedRedisPosts,
+    ...directFollowingPosts,
     ...largeAccountPosts,
   ];
 
@@ -148,6 +201,7 @@ const generateFollowingCandidates = async ({
   const seen = new Set();
 
   const uniquePosts = allPosts.filter((post) => {
+    if (!post || !post._id) return false;
     const id = post._id.toString();
 
     if (seen.has(id)) {
@@ -168,7 +222,12 @@ const generateFollowingCandidates = async ({
       new Date(a.createdAt)
   );
 
-  return uniquePosts;
+  console.log(`[DEBUG] [candidateService] Total unique following candidates returned: ${uniquePosts.length}`);
+
+  return uniquePosts.map((post) => ({
+    post,
+    source: "following",
+  }));
 };
 
 module.exports = {

@@ -10,11 +10,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { useAuth } from "@clerk/expo";
-
-const API_URL = "http://192.168.29.154:3000/api";
+import { useRouter } from "expo-router";
+import { apiFetch } from "@/lib/api";
 
 export default function Create() {
   const { getToken } = useAuth();
+  const router = useRouter();
 
   const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -95,38 +96,26 @@ export default function Create() {
       // 2. Get Clerk token
       const token = await getToken();
 
-      // 3. Send URL to your backend
-      const response = await fetch(
-        `${API_URL}/media`,
+      // 3. Send URL to your backend via apiFetch
+      const data = await apiFetch(
+        "/media",
         {
           method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-
           body: JSON.stringify({
             mediaUrl: imageUrl,
             mediaType: "image",
             caption: "My first real post 🚀",
           }),
-        }
+        },
+        token
       );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.message || "Post creation failed"
-        );
-      }
 
       console.log("POST CREATED:", data);
 
       Alert.alert("Success", "Post created!");
 
       setImage(null);
+      router.replace("/(tabs)");
 
     } catch (error: any) {
       console.error(error);

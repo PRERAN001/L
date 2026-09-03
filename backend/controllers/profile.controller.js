@@ -2,8 +2,12 @@ const User = require("../models/model.user");
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-const { invalidateFeedCache } = require("../utils/redis");
 const { redis } = require("../redis/index");
+
+const invalidateFeedCache = async (userId) => {
+  // Safe helper in case response caching is implemented in future
+  return;
+};
 const getMe = async (req, res) => {
   try {
     const { userId, isAuthenticated } = getAuth(req);
@@ -134,15 +138,21 @@ const toggleFollow = async (req, res) => {
   );
 
   // Remove target user's posts from current user's feed
-  const postsToRemove = await Post.find({
-    user: targetUser._id,
-  }).select("_id");
+  if (redis && redis.isOpen) {
+    try {
+      const postsToRemove = await Post.find({
+        user: targetUser._id,
+      }).select("_id");
 
-  for (const post of postsToRemove) {
-    await redis.zRem(
-      `feed:${currentUser._id}`,
-      post._id.toString()
-    );
+      for (const post of postsToRemove) {
+        await redis.zRem(
+          `feed:${currentUser._id}`,
+          post._id.toString()
+        );
+      }
+    } catch (err) {
+      console.warn("Redis zRem error in toggleFollow:", err.message);
+    }
   }
 
 } else {
@@ -160,17 +170,23 @@ const toggleFollow = async (req, res) => {
   currentUser.following.push(targetUser._id);
 
   // Backfill recent posts
-  const recentPosts = await Post.find({
-    user: targetUser._id,
-  })
-    .sort({ createdAt: -1 })
-    .limit(20);
+  if (redis && redis.isOpen) {
+    try {
+      const recentPosts = await Post.find({
+        user: targetUser._id,
+      })
+        .sort({ createdAt: -1 })
+        .limit(20);
 
-  for (const post of recentPosts) {
-    await redis.zAdd(`feed:${currentUser._id}`, {
-      score: post.createdAt.getTime(),
-      value: post._id.toString(),
-    });
+      for (const post of recentPosts) {
+        await redis.zAdd(`feed:${currentUser._id}`, {
+          score: post.createdAt.getTime(),
+          value: post._id.toString(),
+        });
+      }
+    } catch (err) {
+      console.warn("Redis zAdd error in toggleFollow:", err.message);
+    }
   }
 }
 

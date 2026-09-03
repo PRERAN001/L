@@ -1,20 +1,30 @@
 const Post = require("../models/model.post");
-const { redis } = require("../utils/redis");
+const { redis } = require("../redis/index");
 
 const generateTrendingCandidates = async (limit = 40) => {
+  console.log(`[DEBUG] [trendingService] Starting generateTrendingCandidates with limit: ${limit}`);
   const trendingKey = "trending:posts";
 
-  // Get highest-scoring post IDs
-  const postIds = await redis.zRange(
-    trendingKey,
-    0,
-    limit - 1,
-    {
-      REV: true,
+  let postIds = [];
+  if (redis && redis.isOpen) {
+    try {
+      // Get highest-scoring post IDs
+      postIds = await redis.zRange(
+        trendingKey,
+        0,
+        limit - 1,
+        {
+          REV: true,
+        }
+      );
+      console.log(`[DEBUG] [trendingService] Redis returned ${postIds.length} trending post IDs.`);
+    } catch (err) {
+      console.warn("Redis zRange error in generateTrendingCandidates:", err.message);
     }
-  );
+  }
 
-  if (postIds.length === 0) {
+  if (!postIds || postIds.length === 0) {
+    console.log("[DEBUG] [trendingService] No trending post IDs found in Redis sorted set.");
     return [];
   }
 
@@ -45,7 +55,12 @@ const generateTrendingCandidates = async (limit = 40) => {
     .map((id) => postMap.get(id))
     .filter(Boolean);
 
-  return orderedPosts;
+  console.log(`[DEBUG] [trendingService] Total trending candidates returned: ${orderedPosts.length}`);
+
+  return orderedPosts.map((post) => ({
+    post,
+    source: "trending",
+  }));
 };
 
 module.exports = {

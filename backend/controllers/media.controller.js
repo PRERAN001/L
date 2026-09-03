@@ -23,11 +23,18 @@ const createPost = async (req, res) => {
       mediaType,
       caption,
     });
-    //add post to the trending list with score 90 type :()
-    await redis.zAdd("trending:posts", {
-      score: 0,
-      value: post._id.toString(),
-    });
+    console.log(`[DEBUG] [mediaController] Post created successfully. ID: ${post._id}, Author User ID: ${user._id}, CreatedAt: ${post.createdAt}`);
+    //add post to the trending list
+    if (redis && redis.isOpen) {
+      try {
+        await redis.zAdd("trending:posts", {
+          score: 0,
+          value: post._id.toString(),
+        });
+      } catch (redisErr) {
+        console.warn("Redis zAdd trending warning:", redisErr.message);
+      }
+    }
 
     // FANOUT ON WRITE: Push post ID to followers' Redis feed sorted sets
     const followerCount = user.followers?.length || 0;
