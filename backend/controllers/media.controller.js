@@ -1,8 +1,8 @@
 const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
-// const { invalidateFeedCache } = require("../utils/redis");
-const {redis}=require("./../redis/index")
+const { redis } = require("../redis");
+
 const createPost = async (req, res) => {
   try {
     const { mediaUrl, mediaType = "image", caption = "" } = req.body;
@@ -23,34 +23,46 @@ const createPost = async (req, res) => {
       mediaType,
       caption,
     });
+    //add post to the trending list with score 90 type :()
+    await redis.zAdd("trending:posts", {
+      score: 0,
+      value: post._id.toString(),
+    });
 
+    // FANOUT ON WRITE: Push post ID to followers' Redis feed sorted sets
     const followerCount = user.followers?.length || 0;
-
     const FANOUT_THRESHOLD = 500;
 
     if (followerCount < FANOUT_THRESHOLD) {
       const feedUsers = [...(user.followers || []), user._id];
 
-      for (const feedUserId of feedUsers) {
-        await redis.zAdd(`feed:${feedUserId}`, {
-          score: post.createdAt.getTime(),
-          value: post._id.toString(),
-        });
+      if (redis && redis.isOpen) {
+        try {
+          for (const feedUserId of feedUsers) {
+            await redis.zAdd(`feed:${feedUserId}`, {
+              score: post.createdAt.getTime(),
+              value: post._id.toString(),
+            });
+          }
+          console.log(`[REDIS FANOUT] Post ${post._id} fanned out to ${feedUsers.length} feed(s).`);
+        } catch (redisErr) {
+          console.warn("Redis zAdd fanout warning:", redisErr.message);
+        }
       }
     } else {
       console.log(
-        `Large account (${followerCount} followers): skipping fanout`
+        `Large account (${followerCount} followers): skipping fanout on write, using fanout on read`
       );
-
-      //we dont fanout here we do it while fetching feed
     }
 
-    const populatedPost = await Post.findById(post._id)
-      .populate("user", "username name profileImage");
+    const populatedPost = await Post.findById(post._id).populate(
+      "user",
+      "username name profileImage"
+    );
 
     res.status(201).json(populatedPost);
   } catch (error) {
-    console.error(error);
+    console.error("Create post error:", error);
     res.status(500).json({ message: "Failed to create post" });
   }
 };

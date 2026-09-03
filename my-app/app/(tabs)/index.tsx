@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth, useUser } from "@clerk/expo";
 import { useRouter } from "expo-router";
 import { apiFetch } from "@/lib/api";
+import { useTheme } from "@/context/ThemeContext";
 
 const initialMockStories = [
   {
@@ -93,6 +94,7 @@ export default function HomeScreen() {
   const { getToken } = useAuth();
   const { user } = useUser();
   const router = useRouter();
+  const { colors, isDark } = useTheme();
 
   const [posts, setPosts] = useState<any[]>([]);
   const [stories, setStories] = useState<any[]>([]);
@@ -282,7 +284,6 @@ export default function HomeScreen() {
 
   // LIKE TOGGLE HANDLER
   const handleLikeToggle = async (postId: string) => {
-    // Optimistic UI update
     setPosts((prevPosts) =>
       prevPosts.map((p) => {
         if (p.id === postId) {
@@ -299,28 +300,14 @@ export default function HomeScreen() {
 
     try {
       const token = await getToken();
-      const res = await apiFetch(`/feed/${postId}/like`, { method: "POST" }, token);
-      if (res) {
-        setPosts((prevPosts) =>
-          prevPosts.map((p) => {
-            if (p.id === postId) {
-              return {
-                ...p,
-                isLiked: res.isLiked,
-                likes: res.likesCount,
-              };
-            }
-            return p;
-          })
-        );
-      }
+      await apiFetch(`/feed/${postId}/like`, { method: "POST" }, token);
     } catch (err) {
-      console.log("Error toggling post like:", err);
+      console.log("Error toggling like:", err);
     }
   };
 
   // OPEN COMMENTS MODAL
-  const openCommentsModal = async (post: any) => {
+  const handleOpenComments = async (post: any) => {
     setActivePostForComments(post);
     setCommentsList(post.comments || []);
     setLoadingComments(true);
@@ -340,19 +327,19 @@ export default function HomeScreen() {
 
   // ADD COMMENT HANDLER
   const handleAddComment = async () => {
-    if (!commentInput.trim() || !activePostForComments || submittingComment) return;
+    if (!commentInput.trim() || !activePostForComments) return;
 
-    const textToSubmit = commentInput.trim();
+    const textToSend = commentInput.trim();
     setCommentInput("");
-    setSubmittingComment(true);
 
     try {
+      setSubmittingComment(true);
       const token = await getToken();
       const res = await apiFetch(
         `/feed/${activePostForComments.id}/comments`,
         {
           method: "POST",
-          body: JSON.stringify({ text: textToSubmit }),
+          body: JSON.stringify({ text: textToSend }),
         },
         token
       );
@@ -362,19 +349,19 @@ export default function HomeScreen() {
         setPosts((prevPosts) =>
           prevPosts.map((p) =>
             p.id === activePostForComments.id
-              ? { ...p, commentsCount: res.commentsCount }
+              ? { ...p, commentsCount: (p.commentsCount || 0) + 1 }
               : p
           )
         );
       } else {
-        // Fallback for mock posts
         const mockNewComment = {
           _id: Date.now().toString(),
           user: {
-            username: user?.username || user?.firstName || "me",
-            profileImage: user?.imageUrl || "https://i.pravatar.cc/150?img=12",
+            username: user?.username || "you",
+            name: user?.fullName || "You",
+            profileImage: user?.imageUrl,
           },
-          text: textToSubmit,
+          text: textToSend,
           createdAt: new Date().toISOString(),
         };
         setCommentsList((prev) => [...prev, mockNewComment]);
@@ -394,25 +381,30 @@ export default function HomeScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    <SafeAreaView style={{ backgroundColor: colors.background }} className="flex-1">
       {/* HEADER */}
-      <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-100">
-        <Text className="text-3xl font-bold tracking-tight">Instagram</Text>
+      <View
+        style={{ borderBottomColor: colors.border }}
+        className="flex-row items-center justify-between px-4 py-3 border-b"
+      >
+        <Text style={{ color: colors.text }} className="text-3xl font-bold tracking-tight">
+          Instagram
+        </Text>
 
         <View className="flex-row items-center gap-5">
           <Pressable onPress={onRefresh}>
-            <Ionicons name="reload-outline" size={25} color="black" />
+            <Ionicons name="reload-outline" size={25} color={colors.text} />
           </Pressable>
 
           <Pressable>
-            <Ionicons name="heart-outline" size={27} color="black" />
+            <Ionicons name="heart-outline" size={27} color={colors.text} />
           </Pressable>
 
           <Pressable>
             <Ionicons
               name="chatbubble-ellipses-outline"
               size={26}
-              color="black"
+              color={colors.text}
             />
           </Pressable>
         </View>
@@ -424,14 +416,19 @@ export default function HomeScreen() {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.text}
+          />
         }
       >
         {/* STORIES */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          className="border-b border-gray-100"
+          style={{ borderBottomColor: colors.border }}
+          className="border-b"
           contentContainerClassName="px-3 py-4 gap-4"
         >
           {stories.map((story) => (
@@ -439,11 +436,14 @@ export default function HomeScreen() {
               <View
                 className={`rounded-full p-[2px] ${
                   story.own
-                    ? "bg-gray-300"
+                    ? isDark ? "bg-slate-700" : "bg-gray-300"
                     : "bg-gradient-to-r from-pink-500 to-orange-400"
                 }`}
               >
-                <View className="rounded-full bg-white p-[2px]">
+                <View
+                  style={{ backgroundColor: colors.background }}
+                  className="rounded-full p-[2px]"
+                >
                   <Image
                     source={{ uri: story.image }}
                     className="w-[64px] h-[64px] rounded-full"
@@ -453,6 +453,7 @@ export default function HomeScreen() {
 
               <Text
                 numberOfLines={1}
+                style={{ color: colors.text }}
                 className="text-xs mt-1 w-[70px] text-center"
               >
                 {story.username}
@@ -463,8 +464,10 @@ export default function HomeScreen() {
 
         {loading ? (
           <View className="py-20 items-center justify-center">
-            <ActivityIndicator size="large" color="#000" />
-            <Text className="mt-2 text-gray-500">Loading feed...</Text>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={{ color: colors.subtext }} className="mt-2 text-sm">
+              Loading feed...
+            </Text>
           </View>
         ) : (
           /* POSTS */
@@ -472,117 +475,119 @@ export default function HomeScreen() {
             {posts.map((post) => (
               <View
                 key={post.id}
-                className="border-b border-gray-200 pb-5"
+                style={{ borderBottomColor: colors.border }}
+                className="border-b pb-5"
               >
                 {/* POST HEADER */}
                 <View className="flex-row items-center justify-between px-4 py-3">
                   <Pressable
                     onPress={() => router.push(`/user/${post.username}`)}
-                    className="flex-row items-center"
+                    className="flex-row items-center gap-3"
                   >
                     <Image
                       source={{ uri: post.profileImage }}
-                      className="w-9 h-9 rounded-full mr-3 bg-gray-200"
+                      className="w-9 h-9 rounded-full bg-gray-200"
                     />
-
-                    <View>
-                      <Text className="font-semibold text-sm">
-                        {post.username}
-                      </Text>
-                      <Text className="text-xs text-gray-500">India</Text>
-                    </View>
+                    <Text
+                      style={{ color: colors.text }}
+                      className="font-bold text-sm"
+                    >
+                      {post.username}
+                    </Text>
                   </Pressable>
 
                   <Pressable>
                     <Ionicons
                       name="ellipsis-horizontal"
-                      size={22}
-                      color="black"
+                      size={20}
+                      color={colors.subtext}
                     />
                   </Pressable>
                 </View>
 
-                {/* POST IMAGE */}
-                <Pressable onPress={() => handleLikeToggle(post.id)}>
+                {/* POST MEDIA */}
+                <View className="w-full aspect-square bg-gray-900">
                   <Image
                     source={{ uri: post.postImage }}
-                    className="w-full aspect-square bg-gray-100"
+                    className="w-full h-full"
                     resizeMode="cover"
                   />
-                </Pressable>
+                </View>
 
-                {/* ACTION BUTTONS */}
+                {/* POST ACTIONS */}
                 <View className="flex-row items-center justify-between px-4 pt-3">
-                  <View className="flex-row items-center gap-5">
+                  <View className="flex-row items-center gap-4">
                     <Pressable onPress={() => handleLikeToggle(post.id)}>
                       <Ionicons
                         name={post.isLiked ? "heart" : "heart-outline"}
-                        size={28}
-                        color={post.isLiked ? "#ef4444" : "black"}
+                        size={27}
+                        color={post.isLiked ? "#ef4444" : colors.text}
                       />
                     </Pressable>
 
-                    <Pressable onPress={() => openCommentsModal(post)}>
+                    <Pressable onPress={() => handleOpenComments(post)}>
                       <Ionicons
                         name="chatbubble-outline"
-                        size={27}
-                        color="black"
+                        size={25}
+                        color={colors.text}
                       />
                     </Pressable>
 
                     <Pressable>
                       <Ionicons
                         name="paper-plane-outline"
-                        size={27}
-                        color="black"
+                        size={24}
+                        color={colors.text}
                       />
                     </Pressable>
                   </View>
 
                   <Pressable>
-                    <Ionicons name="bookmark-outline" size={27} color="black" />
+                    <Ionicons
+                      name="bookmark-outline"
+                      size={25}
+                      color={colors.text}
+                    />
                   </Pressable>
                 </View>
 
-                {/* LIKES */}
-                <Text className="font-semibold text-sm px-4 mt-2">
-                  {post.likes.toLocaleString()} likes
-                </Text>
-
-                {/* CAPTION */}
-                {post.caption ? (
-                  <View className="flex-row px-4 mt-1">
-                    <Text className="font-semibold mr-1">{post.username}</Text>
-                    <Text className="text-sm">{post.caption}</Text>
-                  </View>
-                ) : null}
-
-                {/* COMMENTS COUNT / TRIGGER */}
-                <Pressable
-                  onPress={() => openCommentsModal(post)}
-                  className="px-4 mt-2"
-                >
-                  <Text className="text-gray-500 text-sm">
-                    {post.commentsCount > 0
-                      ? `View all ${post.commentsCount} comments`
-                      : "Add a comment..."}
+                {/* LIKES & CAPTION */}
+                <View className="px-4 mt-2">
+                  <Text style={{ color: colors.text }} className="font-bold text-sm">
+                    {post.likes.toLocaleString()} likes
                   </Text>
-                </Pressable>
 
-                {/* TIME */}
-                <Text className="text-gray-400 text-[10px] uppercase px-4 mt-3">
-                  {post.time}
-                </Text>
+                  {post.caption ? (
+                    <Text style={{ color: colors.text }} className="text-sm mt-1">
+                      <Text className="font-bold">{post.username} </Text>
+                      {post.caption}
+                    </Text>
+                  ) : null}
+
+                  {post.commentsCount > 0 && (
+                    <Pressable
+                      onPress={() => handleOpenComments(post)}
+                      className="mt-1"
+                    >
+                      <Text style={{ color: colors.subtext }} className="text-xs">
+                        View all {post.commentsCount} comments
+                      </Text>
+                    </Pressable>
+                  )}
+
+                  <Text
+                    style={{ color: colors.subtext }}
+                    className="text-[11px] mt-1 uppercase"
+                  >
+                    {post.time}
+                  </Text>
+                </View>
               </View>
             ))}
 
-            {/* PAGINATION LOADER */}
             {loadingMore && (
-              <View className="py-6 items-center justify-center">
-                <ActivityIndicator size="small" color="#000" />
-                <Text className="mt-2 text-xs text-gray-500">
-                  Loading more posts...
-                </Text>
+              <View className="py-6 items-center">
+                <ActivityIndicator size="small" color={colors.primary} />
               </View>
             )}
           </>
@@ -591,64 +596,72 @@ export default function HomeScreen() {
 
       {/* COMMENTS MODAL */}
       <Modal
-        visible={!!activePostForComments}
+        visible={activePostForComments !== null}
         animationType="slide"
         transparent={false}
         onRequestClose={() => setActivePostForComments(null)}
       >
-        <SafeAreaView className="flex-1 bg-white">
+        <SafeAreaView
+          style={{ backgroundColor: colors.modalBg }}
+          className="flex-1"
+        >
           {/* MODAL HEADER */}
-          <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200">
+          <View
+            style={{ borderBottomColor: colors.border }}
+            className="flex-row items-center justify-between px-4 py-3 border-b"
+          >
             <Pressable
               onPress={() => setActivePostForComments(null)}
               className="p-1"
             >
-              <Ionicons name="close" size={26} color="black" />
+              <Ionicons name="close" size={26} color={colors.text} />
             </Pressable>
-            <Text className="font-bold text-lg">Comments</Text>
+            <Text style={{ color: colors.text }} className="font-bold text-lg">
+              Comments
+            </Text>
             <View className="w-6" />
           </View>
 
+          {/* COMMENTS LIST */}
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             className="flex-1"
           >
-            {/* COMMENTS LIST */}
             <ScrollView className="flex-1 px-4 py-3">
               {loadingComments ? (
                 <View className="py-10 items-center">
-                  <ActivityIndicator size="small" color="#000" />
-                  <Text className="text-gray-500 text-xs mt-2">
-                    Loading comments...
-                  </Text>
+                  <ActivityIndicator size="small" color={colors.primary} />
                 </View>
               ) : commentsList.length > 0 ? (
                 commentsList.map((c: any, index: number) => (
-                  <View
-                    key={c._id || index}
-                    className="flex-row items-start mb-4"
-                  >
+                  <View key={c._id || index} className="flex-row gap-3 mb-4">
                     <Image
                       source={{
                         uri:
                           c.user?.profileImage ||
                           "https://i.pravatar.cc/150?img=12",
                       }}
-                      className="w-9 h-9 rounded-full mr-3 bg-gray-200"
+                      className="w-9 h-9 rounded-full bg-gray-200"
                     />
                     <View className="flex-1">
-                      <Text className="text-sm">
-                        <Text className="font-bold">
-                          {c.user?.username || c.user?.name || "user"}{" "}
+                      <Text
+                        style={{ color: colors.text }}
+                        className="text-sm font-semibold"
+                      >
+                        {c.user?.username || c.user?.name || "User"}{" "}
+                        <Text
+                          style={{ color: colors.text }}
+                          className="font-normal"
+                        >
+                          {c.text}
                         </Text>
-                        <Text className="text-gray-800">{c.text}</Text>
                       </Text>
-                      <Text className="text-gray-400 text-[10px] mt-1">
+                      <Text
+                        style={{ color: colors.subtext }}
+                        className="text-[11px] mt-1"
+                      >
                         {c.createdAt
-                          ? new Date(c.createdAt).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
+                          ? new Date(c.createdAt).toLocaleDateString()
                           : "Just now"}
                       </Text>
                     </View>
@@ -656,50 +669,45 @@ export default function HomeScreen() {
                 ))
               ) : (
                 <View className="py-16 items-center">
-                  <Ionicons
-                    name="chatbubble-outline"
-                    size={40}
-                    color="#9ca3af"
-                  />
-                  <Text className="text-gray-500 font-semibold mt-2">
-                    No comments yet
-                  </Text>
-                  <Text className="text-gray-400 text-xs mt-1">
-                    Start the conversation!
+                  <Text style={{ color: colors.subtext }} className="text-sm">
+                    No comments yet. Start the conversation!
                   </Text>
                 </View>
               )}
             </ScrollView>
 
-            {/* INPUT BAR */}
-            <View className="flex-row items-center px-4 py-3 border-t border-gray-200 bg-white">
-              <Image
-                source={{
-                  uri: user?.imageUrl || "https://i.pravatar.cc/150?img=12",
-                }}
-                className="w-9 h-9 rounded-full mr-3 bg-gray-200"
-              />
+            {/* INPUT */}
+            <View
+              style={{
+                borderTopColor: colors.border,
+                backgroundColor: colors.modalBg,
+              }}
+              className="flex-row items-center px-4 py-3 border-t gap-3"
+            >
               <TextInput
-                placeholder="Add a comment..."
-                placeholderTextColor="#9ca3af"
                 value={commentInput}
                 onChangeText={setCommentInput}
-                className="flex-1 text-sm text-black py-2"
-                onSubmitEditing={handleAddComment}
-                returnKeyType="send"
+                placeholder="Add a comment..."
+                placeholderTextColor={colors.subtext}
+                style={{
+                  backgroundColor: colors.inputBg,
+                  borderColor: colors.inputBorder,
+                  color: colors.text,
+                }}
+                className="flex-1 px-4 py-2.5 rounded-full border text-sm"
               />
               <Pressable
                 onPress={handleAddComment}
                 disabled={!commentInput.trim() || submittingComment}
-                className="ml-2 px-3 py-1.5 rounded-lg"
               >
                 {submittingComment ? (
-                  <ActivityIndicator size="small" color="#3b82f6" />
+                  <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
                   <Text
-                    className={`font-bold text-sm ${
-                      commentInput.trim() ? "text-blue-500" : "text-blue-200"
-                    }`}
+                    style={{
+                      color: commentInput.trim() ? "#3B82F6" : colors.subtext,
+                    }}
+                    className="font-bold text-sm"
                   >
                     Post
                   </Text>

@@ -1,19 +1,23 @@
-import { Tabs } from 'expo-router'
-import React from 'react'
-import MaterialIcons from '@expo/vector-icons/MaterialIcons'
-
-import { HapticTab } from '@/components/haptic-tab'
+import { Tabs } from 'expo-router';
+import React from 'react';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { HapticTab } from '@/components/haptic-tab';
+import { useTheme } from '@/context/ThemeContext';
 
 export default function TabLayout() {
+  const { colors } = useTheme();
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
-
-        tabBarActiveTintColor: '#000',
-        tabBarInactiveTintColor: '#888',
-
+        tabBarActiveTintColor: colors.tabBarActive,
+        tabBarInactiveTintColor: colors.tabBarInactive,
+        tabBarStyle: {
+          backgroundColor: colors.tabBarBg,
+          borderTopColor: colors.border,
+        },
         tabBarButton: HapticTab,
       }}
     >
@@ -87,5 +91,5 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
-  )
+  );
 }

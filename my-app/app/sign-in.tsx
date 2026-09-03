@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -46,7 +47,7 @@ export default function SignInScreen() {
     return (
       <View className="flex-1 items-center justify-center bg-white">
         <Text className="text-lg font-semibold">
-          You're signed in
+          You&apos;re signed in
         </Text>
       </View>
     );
@@ -65,16 +66,12 @@ export default function SignInScreen() {
 
         {/* LOGO */}
         <View className="items-center mb-12">
-          <Text
-            className="text-5xl font-bold"
-            style={{
-              fontFamily: Platform.OS === "ios"
-                ? "System"
-                : "sans-serif",
-            }}
-          >
-            Instagram
-          </Text>
+          <Image
+            source={require("../assets/images/icon.png")}
+            className="h-32 w-32"
+            resizeMode="contain"
+            accessibilityLabel="Instagram logo"
+          />
         </View>
 
         {/* INPUTS */}
@@ -148,7 +145,7 @@ export default function SignInScreen() {
 
           <View className="flex-row">
             <Text className="text-gray-600">
-              Don't have an account?
+              Don&apos;t have an account?
             </Text>
 
             <Pressable onPress={handleSignUp}>

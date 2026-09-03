@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth, useUser } from "@clerk/expo";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { apiFetch } from "@/lib/api";
+import { useTheme } from "@/context/ThemeContext";
 
 interface UserProfile {
   _id: string;
@@ -41,6 +42,7 @@ export default function UserProfileScreen() {
   const router = useRouter();
   const { getToken } = useAuth();
   const { user: me } = useUser();
+  const { colors, isDark } = useTheme();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -141,47 +143,58 @@ export default function UserProfileScreen() {
     }
   };
 
-  const isOwnProfile =
-    me?.username === username || me?.firstName === username;
+  const displayUsername = profile?.username || username || "user";
+  const name = profile?.name || "User";
+  const bio = profile?.bio || "";
+  const profileImage = profile?.profileImage || "";
+  const isSelf =
+    me?.username?.toLowerCase() === displayUsername.toLowerCase() ||
+    me?.firstName?.toLowerCase() === displayUsername.toLowerCase();
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    <SafeAreaView style={{ backgroundColor: colors.background }} className="flex-1">
       {/* HEADER */}
-      <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-100">
-        <Pressable onPress={() => router.back()} className="p-1 -ml-1">
-          <Ionicons name="chevron-back" size={28} color="black" />
+      <View
+        style={{ borderBottomColor: colors.border }}
+        className="flex-row items-center justify-between px-4 py-3 border-b"
+      >
+        <Pressable onPress={() => router.back()} className="p-1">
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
 
-        <Text className="text-xl font-bold">@{username}</Text>
+        <Text style={{ color: colors.text }} className="text-xl font-bold">
+          @{displayUsername}
+        </Text>
 
-        {!isOwnProfile && profile ? (
-          <Pressable onPress={handleBlockToggle} className="p-1">
+        {!isSelf && profile ? (
+          <Pressable onPress={handleBlockToggle} disabled={blockingLoading}>
             <Ionicons
-              name="ban-outline"
+              name={profile.isBlocked ? "shield-checkmark" : "shield-outline"}
               size={22}
-              color={profile.isBlocked ? "#ef4444" : "black"}
+              color={profile.isBlocked ? "#EF4444" : colors.text}
             />
           </Pressable>
         ) : (
-          <View className="w-7" />
+          <View className="w-6" />
         )}
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.text}
+          />
         }
       >
         {loading ? (
           <View className="py-20 items-center justify-center">
-            <ActivityIndicator size="large" color="#000" />
-            <Text className="mt-3 text-gray-500">Loading profile...</Text>
-          </View>
-        ) : !profile ? (
-          <View className="py-20 items-center justify-center px-4">
-            <Ionicons name="person-remove-outline" size={48} color="#9ca3af" />
-            <Text className="text-gray-500 mt-3 text-base">User not found</Text>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={{ color: colors.subtext }} className="mt-3 text-sm">
+              Loading user profile...
+            </Text>
           </View>
         ) : (
           <>
@@ -189,84 +202,114 @@ export default function UserProfileScreen() {
             <View className="px-4 pt-4">
               <View className="flex-row items-center">
                 {/* PROFILE IMAGE */}
-                {profile.profileImage ? (
+                {profileImage ? (
                   <Image
-                    source={{ uri: profile.profileImage }}
+                    source={{ uri: profileImage }}
                     className="w-24 h-24 rounded-full bg-gray-200"
                   />
                 ) : (
-                  <View className="w-24 h-24 rounded-full bg-gray-200 items-center justify-center">
-                    <Ionicons name="person" size={40} color="#737373" />
+                  <View
+                    style={{ backgroundColor: colors.card }}
+                    className="w-24 h-24 rounded-full items-center justify-center border border-gray-200 dark:border-gray-800"
+                  >
+                    <Ionicons name="person" size={40} color={colors.subtext} />
                   </View>
                 )}
 
                 {/* STATS */}
                 <View className="flex-1 flex-row justify-around ml-5">
                   <View className="items-center">
-                    <Text className="font-bold text-lg">{posts.length}</Text>
-                    <Text className="text-sm text-gray-600">Posts</Text>
+                    <Text
+                      style={{ color: colors.text }}
+                      className="font-bold text-lg"
+                    >
+                      {posts.length}
+                    </Text>
+                    <Text style={{ color: colors.subtext }} className="text-xs">
+                      Posts
+                    </Text>
                   </View>
 
                   <View className="items-center">
-                    <Text className="font-bold text-lg">
-                      {profile.followersCount}
+                    <Text
+                      style={{ color: colors.text }}
+                      className="font-bold text-lg"
+                    >
+                      {profile?.followersCount ?? 0}
                     </Text>
-                    <Text className="text-sm text-gray-600">Followers</Text>
+                    <Text style={{ color: colors.subtext }} className="text-xs">
+                      Followers
+                    </Text>
                   </View>
 
                   <View className="items-center">
-                    <Text className="font-bold text-lg">
-                      {profile.followingCount}
+                    <Text
+                      style={{ color: colors.text }}
+                      className="font-bold text-lg"
+                    >
+                      {profile?.followingCount ?? 0}
                     </Text>
-                    <Text className="text-sm text-gray-600">Following</Text>
+                    <Text style={{ color: colors.subtext }} className="text-xs">
+                      Following
+                    </Text>
                   </View>
                 </View>
               </View>
 
-              {/* NAME & BIO */}
+              {/* BIO */}
               <View className="mt-4">
-                <Text className="font-bold text-base">{profile.name}</Text>
-                <Text className="text-sm mt-1 text-gray-800">
-                  {profile.bio || "No bio yet"}
+                <Text style={{ color: colors.text }} className="font-bold text-base">
+                  {name}
                 </Text>
+                {bio ? (
+                  <Text style={{ color: colors.text }} className="text-sm mt-1">
+                    {bio}
+                  </Text>
+                ) : null}
               </View>
 
               {/* ACTION BUTTONS */}
-              {!isOwnProfile && (
+              {!isSelf && profile && (
                 <View className="flex-row gap-2 mt-4">
                   {profile.isBlocked ? (
                     <Pressable
                       onPress={handleBlockToggle}
-                      disabled={blockingLoading}
-                      className="flex-1 bg-red-500 rounded-lg py-2.5 items-center"
+                      style={{
+                        backgroundColor: colors.inputBg,
+                        borderColor: colors.border,
+                      }}
+                      className="flex-1 rounded-lg py-2.5 items-center border"
                     >
-                      {blockingLoading ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Text className="font-semibold text-white">Unblock</Text>
-                      )}
+                      <Text
+                        style={{ color: colors.text }}
+                        className="font-semibold text-sm"
+                      >
+                        Unblock User
+                      </Text>
                     </Pressable>
                   ) : (
                     <>
                       <Pressable
                         onPress={handleFollowToggle}
                         disabled={followingLoading}
-                        className={`flex-1 rounded-lg py-2.5 items-center ${
-                          profile.isFollowing
-                            ? "bg-gray-200 border border-gray-300"
-                            : "bg-black"
-                        }`}
+                        style={{
+                          backgroundColor: profile.isFollowing
+                            ? colors.inputBg
+                            : "#3B82F6",
+                          borderColor: colors.border,
+                        }}
+                        className="flex-1 rounded-lg py-2.5 items-center border border-transparent"
                       >
                         {followingLoading ? (
-                          <ActivityIndicator
-                            size="small"
-                            color={profile.isFollowing ? "#000" : "#fff"}
-                          />
+                          <ActivityIndicator size="small" color="#fff" />
                         ) : (
                           <Text
-                            className={`font-semibold ${
-                              profile.isFollowing ? "text-black" : "text-white"
-                            }`}
+                            style={{
+                              color: profile.isFollowing
+                                ? colors.text
+                                : "#FFFFFF",
+                            }}
+                            className="font-semibold text-sm"
                           >
                             {profile.isFollowing ? "Following" : "Follow"}
                           </Text>
@@ -274,15 +317,18 @@ export default function UserProfileScreen() {
                       </Pressable>
 
                       <Pressable
-                        onPress={handleBlockToggle}
-                        disabled={blockingLoading}
-                        className="bg-gray-100 rounded-lg px-4 py-2.5 items-center border border-gray-200"
+                        style={{
+                          backgroundColor: colors.inputBg,
+                          borderColor: colors.border,
+                        }}
+                        className="flex-1 rounded-lg py-2.5 items-center border"
                       >
-                        {blockingLoading ? (
-                          <ActivityIndicator size="small" color="#ef4444" />
-                        ) : (
-                          <Text className="font-semibold text-red-500">Block</Text>
-                        )}
+                        <Text
+                          style={{ color: colors.text }}
+                          className="font-semibold text-sm"
+                        >
+                          Message
+                        </Text>
                       </Pressable>
                     </>
                   )}
@@ -291,27 +337,37 @@ export default function UserProfileScreen() {
             </View>
 
             {/* TAB BAR */}
-            <View className="flex-row border-t border-gray-200 mt-5">
-              <Pressable className="flex-1 items-center py-3 border-b-2 border-black">
-                <Ionicons name="grid-outline" size={23} color="black" />
-              </Pressable>
-              <Pressable className="flex-1 items-center py-3">
-                <Ionicons name="play-outline" size={24} color="gray" />
-              </Pressable>
-              <Pressable className="flex-1 items-center py-3">
-                <Ionicons name="person-outline" size={23} color="gray" />
+            <View
+              style={{ borderTopColor: colors.border }}
+              className="flex-row border-t mt-5"
+            >
+              <Pressable
+                style={{ borderBottomColor: colors.text }}
+                className="flex-1 items-center py-3 border-b-2"
+              >
+                <Ionicons name="grid-outline" size={23} color={colors.text} />
               </Pressable>
             </View>
 
-            {/* BLOCKED BANNER OR POSTS GRID */}
-            {profile.isBlocked ? (
+            {/* POSTS GRID */}
+            {profile?.isBlocked ? (
               <View className="py-16 items-center justify-center px-4">
-                <Ionicons name="ban-outline" size={44} color="#ef4444" />
-                <Text className="font-bold text-lg text-black mt-2">
+                <Ionicons
+                  name="shield-outline"
+                  size={48}
+                  color={colors.subtext}
+                />
+                <Text
+                  style={{ color: colors.text }}
+                  className="font-bold text-lg mt-2"
+                >
                   User Blocked
                 </Text>
-                <Text className="text-gray-500 text-sm mt-1 text-center">
-                  You have blocked this user. Unblock to view their posts.
+                <Text
+                  style={{ color: colors.subtext }}
+                  className="text-xs mt-1 text-center"
+                >
+                  Unblock this user to see their posts and profile activity.
                 </Text>
               </View>
             ) : posts.length > 0 ? (
@@ -323,7 +379,7 @@ export default function UserProfileScreen() {
                   >
                     <Image
                       source={{ uri: post.mediaUrl }}
-                      className="w-full h-full bg-gray-100"
+                      className="w-full h-full bg-gray-200 dark:bg-slate-800"
                       resizeMode="cover"
                     />
                   </Pressable>
@@ -331,10 +387,15 @@ export default function UserProfileScreen() {
               </View>
             ) : (
               <View className="py-16 items-center justify-center px-4">
-                <View className="w-20 h-20 rounded-full border-2 border-black items-center justify-center mb-3">
-                  <Ionicons name="camera-outline" size={40} color="black" />
-                </View>
-                <Text className="font-bold text-xl text-black">
+                <Ionicons
+                  name="camera-outline"
+                  size={48}
+                  color={colors.subtext}
+                />
+                <Text
+                  style={{ color: colors.text }}
+                  className="font-bold text-lg mt-2"
+                >
                   No Posts Yet
                 </Text>
               </View>

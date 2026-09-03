@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth, useUser } from "@clerk/expo";
 import { useRouter } from "expo-router";
 import { apiFetch } from "@/lib/api";
+import { useTheme } from "@/context/ThemeContext";
 
 const initialUsersList = [
   {
@@ -42,6 +43,7 @@ export default function Search() {
   const { getToken } = useAuth();
   const { user: me } = useUser();
   const router = useRouter();
+  const { colors, isDark } = useTheme();
 
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -51,7 +53,6 @@ export default function Search() {
 
   const currentUsername = me?.username || me?.firstName || "";
 
-  // Filter suggested users to exclude current user
   useEffect(() => {
     if (currentUsername) {
       setSuggestedUsers(
@@ -72,9 +73,7 @@ export default function Search() {
 
     try {
       setLoading(true);
-
       const token = await getToken();
-
       const results = await apiFetch(
         `/search?q=${encodeURIComponent(q.trim())}`,
         {},
@@ -82,7 +81,6 @@ export default function Search() {
       );
 
       if (Array.isArray(results)) {
-        // Exclude current logged in user
         const filtered = results.filter(
           (u: any) =>
             u.username?.toLowerCase() !== currentUsername.toLowerCase()
@@ -142,117 +140,130 @@ export default function Search() {
   const displayUsers = query.trim() ? searchResults : suggestedUsers;
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    <SafeAreaView style={{ backgroundColor: colors.background }} className="flex-1">
       {/* HEADER / SEARCH BAR */}
       <View className="px-4 pt-2 pb-3">
-        <View className="flex-row items-center bg-gray-100 rounded-xl px-3 h-11">
-          <Ionicons name="search" size={20} color="#737373" />
+        <View
+          style={{ backgroundColor: colors.inputBg }}
+          className="flex-row items-center rounded-xl px-3 h-11 border border-transparent dark:border-gray-800"
+        >
+          <Ionicons name="search" size={20} color={colors.subtext} />
 
           <TextInput
-            placeholder="Search users..."
-            placeholderTextColor="#737373"
             value={query}
             onChangeText={handleSearch}
-            className="flex-1 ml-2 text-base text-black"
+            placeholder="Search users..."
+            placeholderTextColor={colors.subtext}
+            style={{ color: colors.text }}
+            className="flex-1 ml-2.5 text-base"
+            autoCapitalize="none"
           />
 
-          {query ? (
-            <Pressable onPress={() => setQuery("")}>
-              <Ionicons name="close-circle" size={20} color="#737373" />
+          {query.length > 0 && (
+            <Pressable onPress={() => handleSearch("")}>
+              <Ionicons
+                name="close-circle"
+                size={18}
+                color={colors.subtext}
+              />
             </Pressable>
-          ) : null}
+          )}
         </View>
       </View>
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* SUGGESTED / SEARCH USERS */}
-        <View className="px-4 pt-2 pb-4">
-          <View className="flex-row items-center justify-between mb-4">
-            <Text className="text-base font-bold">
+      {/* BODY */}
+      <ScrollView className="flex-1 px-4">
+        {loading ? (
+          <View className="py-12 items-center">
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={{ color: colors.subtext }} className="mt-3 text-sm">
+              Searching...
+            </Text>
+          </View>
+        ) : (
+          <>
+            <Text
+              style={{ color: colors.subtext }}
+              className="font-bold text-xs uppercase tracking-wider mb-3 mt-2"
+            >
               {query.trim() ? "Search Results" : "Suggested for you"}
             </Text>
 
-            {loading ? <ActivityIndicator size="small" color="#000" /> : null}
-          </View>
-
-          {displayUsers.length > 0 ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {displayUsers.map((user) => (
-                <View key={user.username} className="items-center mr-5">
-                  <Pressable
-                    onPress={() => router.push(`/user/${user.username}`)}
-                    className="items-center"
-                  >
+            {displayUsers.length > 0 ? (
+              displayUsers.map((user) => (
+                <Pressable
+                  key={user.username}
+                  onPress={() => router.push(`/user/${user.username}`)}
+                  style={{ borderBottomColor: colors.border }}
+                  className="flex-row items-center justify-between py-3 border-b"
+                >
+                  <View className="flex-row items-center gap-3.5 flex-1 pr-2">
                     <Image
                       source={{ uri: user.image }}
-                      className="w-20 h-20 rounded-full bg-gray-200"
+                      className="w-12 h-12 rounded-full bg-gray-200"
                     />
 
-                    <Text className="font-semibold text-sm mt-2">
-                      {user.username}
-                    </Text>
-
-                    <Text className="text-gray-500 text-xs mt-1">
-                      {user.name}
-                    </Text>
-                  </Pressable>
+                    <View className="flex-1">
+                      <Text
+                        style={{ color: colors.text }}
+                        className="font-bold text-base"
+                      >
+                        {user.username}
+                      </Text>
+                      <Text
+                        style={{ color: colors.subtext }}
+                        className="text-xs"
+                      >
+                        {user.name}
+                      </Text>
+                    </View>
+                  </View>
 
                   <Pressable
                     onPress={() => handleFollowToggle(user.username)}
                     disabled={followingMap[user.username]}
-                    className={`rounded-lg px-5 py-2 mt-2 ${
-                      user.isFollowing
-                        ? "bg-gray-200 border border-gray-300"
-                        : "bg-black"
-                    }`}
+                    style={{
+                      backgroundColor: user.isFollowing
+                        ? colors.inputBg
+                        : "#3B82F6",
+                      borderColor: colors.border,
+                    }}
+                    className={`px-4 py-1.5 rounded-lg border border-transparent`}
                   >
-                    {followingMap[user.username] ? (
-                      <ActivityIndicator
-                        size="small"
-                        color={user.isFollowing ? "#000" : "#fff"}
-                      />
-                    ) : (
-                      <Text
-                        className={`font-semibold text-xs ${
-                          user.isFollowing ? "text-black" : "text-white"
-                        }`}
-                      >
-                        {user.isFollowing ? "Following" : "Follow"}
-                      </Text>
-                    )}
+                    <Text
+                      style={{
+                        color: user.isFollowing ? colors.text : "#FFFFFF",
+                      }}
+                      className="font-semibold text-xs"
+                    >
+                      {user.isFollowing ? "Following" : "Follow"}
+                    </Text>
                   </Pressable>
-                </View>
-              ))}
-            </ScrollView>
-          ) : (
-            <Text className="text-gray-500 py-4 text-center">
-              No users found matching "{query}"
-            </Text>
-          )}
-        </View>
-
-        {/* EXPLORE SECTION */}
-        <View className="border-t border-gray-200 pt-1">
-          <Text className="font-bold text-base px-4 py-3">Explore</Text>
-
-          <View className="flex-row flex-wrap">
-            {Array.from({ length: 12 }, (_, i) => ({
-              id: i,
-              image: `https://picsum.photos/400/400?random=${i + 50}`,
-            })).map((post) => (
-              <Pressable key={post.id} className="w-1/3 aspect-square p-[1px]">
-                <Image
-                  source={{ uri: post.image }}
-                  className="w-full h-full"
-                  resizeMode="cover"
+                </Pressable>
+              ))
+            ) : (
+              <View className="py-16 items-center">
+                <Ionicons
+                  name="person-remove-outline"
+                  size={48}
+                  color={colors.subtext}
                 />
-              </Pressable>
-            ))}
-          </View>
-        </View>
+                <Text
+                  style={{ color: colors.text }}
+                  className="font-bold text-base mt-3"
+                >
+                  No users found
+                </Text>
+                <Text
+                  style={{ color: colors.subtext }}
+                  className="text-xs mt-1 text-center"
+                >
+                  Try searching for another username or name.
+                </Text>
+              </View>
+            )}
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );

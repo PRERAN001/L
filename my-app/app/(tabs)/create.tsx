@@ -16,7 +16,7 @@ const API_URL = "http://192.168.29.154:3000/api";
 export default function Create() {
   const { getToken } = useAuth();
 
-  const [image, setImage] = useState(null);
+  const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const pickImage = async () => {
@@ -43,104 +43,102 @@ export default function Create() {
     }
   };
 
-  const createPost = async () => {
-  if (!image) {
-    Alert.alert("Select an image first");
-    return;
-  }
+  const uploadImage = async (imgAsset: ImagePicker.ImagePickerAsset) => {
+    const formData = new FormData();
 
-  try {
-    setUploading(true);
+    formData.append("file", {
+      uri: imgAsset.uri,
+      type: imgAsset.mimeType || "image/jpeg",
+      name: imgAsset.fileName || "image.jpg",
+    } as any);
 
-    // 1. Upload image
-    const imageUrl = await uploadImage(image);
+    formData.append(
+      "upload_preset",
+      "blog_upload"
+    );
 
-    console.log("Cloudinary URL:", imageUrl);
-
-    // 2. Get Clerk token
-    const token = await getToken();
-
-    // 3. Send URL to your backend
     const response = await fetch(
-      `${API_URL}/media`,
+      `https://api.cloudinary.com/v1_1/dxn29vjxu/image/upload`,
       {
         method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-
-        body: JSON.stringify({
-          mediaUrl: imageUrl,
-          mediaType: "image",
-          caption: "My first real post 🚀",
-        }),
+        body: formData,
       }
     );
 
     const data = await response.json();
 
     if (!response.ok) {
+      console.log("Cloudinary error:", data);
+
       throw new Error(
-        data.message || "Post creation failed"
+        data.error?.message || "Image upload failed"
       );
     }
 
-    console.log("POST CREATED:", data);
+    return data.secure_url;
+  };
 
-    Alert.alert("Success", "Post created!");
-
-    setImage(null);
-
-  } catch (error) {
-    console.error(error);
-
-    Alert.alert(
-      "Error",
-      error.message || "Something went wrong"
-    );
-  } finally {
-    setUploading(false);
-  }
-};
-
-  const uploadImage = async (image) => {
-  const formData = new FormData();
-
-  formData.append("file", {
-    uri: image.uri,
-    type: image.mimeType || "image/jpeg",
-    name: image.fileName || "image.jpg",
-  });
-
-  formData.append(
-    "upload_preset",
-    "blog_upload"
-  );
-
- 
-
-  const response = await fetch(
-    `https://api.cloudinary.com/v1_1/dxn29vjxu/image/upload`,
-    {
-      method: "POST",
-      body: formData,
+  const createPost = async () => {
+    if (!image) {
+      Alert.alert("Select an image first");
+      return;
     }
-  );
 
-  const data = await response.json();
+    try {
+      setUploading(true);
 
-  if (!response.ok) {
-    console.log("Cloudinary error:", data);
+      // 1. Upload image
+      const imageUrl = await uploadImage(image);
 
-    throw new Error(
-      data.error?.message || "Image upload failed"
-    );
-  }
+      console.log("Cloudinary URL:", imageUrl);
 
-  return data.secure_url;
-};
+      // 2. Get Clerk token
+      const token = await getToken();
+
+      // 3. Send URL to your backend
+      const response = await fetch(
+        `${API_URL}/media`,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+
+          body: JSON.stringify({
+            mediaUrl: imageUrl,
+            mediaType: "image",
+            caption: "My first real post 🚀",
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.message || "Post creation failed"
+        );
+      }
+
+      console.log("POST CREATED:", data);
+
+      Alert.alert("Success", "Post created!");
+
+      setImage(null);
+
+    } catch (error: any) {
+      console.error(error);
+
+      Alert.alert(
+        "Error",
+        error.message || "Something went wrong"
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <SafeAreaView className="flex-1 bg-white">
@@ -168,23 +166,14 @@ export default function Create() {
         </Pressable>
 
         <Pressable
-          onPress={pickImage}
-          className="mt-5 bg-gray-200 p-4 rounded-xl items-center"
-        >
-          <Text className="font-bold">
-            Choose from gallery
-          </Text>
-        </Pressable>
-
-        <Pressable
           onPress={createPost}
           disabled={uploading}
-          className="mt-3 bg-black p-4 rounded-xl items-center"
+          className="bg-black py-4 rounded-xl mt-5 items-center"
         >
           {uploading ? (
-            <ActivityIndicator color="white" />
+            <ActivityIndicator color="#fff" />
           ) : (
-            <Text className="text-white font-bold">
+            <Text className="text-white font-bold text-lg">
               Post
             </Text>
           )}

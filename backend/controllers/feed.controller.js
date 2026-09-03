@@ -1,14 +1,27 @@
 const Post = require("../models/model.post");
+const User = require("../models/model.user");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
+const { redis } = require("../redis");
+const {generateFollowingCandidates} = require("../feed/candidateService")
+const {generateExplorationCandidates} = require("../feed/explorationService")
+const {generateTrendingCandidates} = require("../feed/trendingService")
+const FANOUT_THRESHOLD = 500;
 
-
-const FANOUT_THRESHOLD = 10000;
+const invalidateFeedCache = async (userId) => {
+  try {
+    if (redis && redis.isOpen && userId) {
+      await redis.del(`feed:${userId}`);
+    }
+  } catch (err) {
+    console.warn("Redis cache invalidation warning:", err.message);
+  }
+};
 
 const getFeed = async (req, res) => {
-  try {
-    const { userId } = getAuth(req);
+  try { 
 
+    const { userId } = getAuth(req);
     if (!userId) {
       return res.status(401).json({
         message: "Unauthorized",
@@ -17,6 +30,7 @@ const getFeed = async (req, res) => {
 
     const user = await getOrCreateUser(userId);
 
+
     const limit = Math.min(
       parseInt(req.query.limit) || 20,
       50
@@ -24,151 +38,86 @@ const getFeed = async (req, res) => {
 
     const cursor = req.query.cursor;
 
-    const feedKey = `feed:${user._id}`;
-//get posts from redis
+   
 
-    let redisPostIds;
+    const [
+      followingCandidates,
+      trendingCandidates,
+      explorationCandidates,
+    ] = await Promise.all([
+      generateFollowingCandidates({
+        user,
+        cursor,
+        limit,
+      }),
 
-    if (!cursor) {
-      redisPostIds = await redis.zRange(
-        feedKey,
-        0,
-        limit - 1,
-        {
-          REV: true,
-        }
-      );
-    } else {
-      redisPostIds = await redis.zRange(
-        feedKey,
-        `(${cursor}`,
-        "-inf",
-        {
-          REV: true,
-          BY: "SCORE",
-          LIMIT: {
-            offset: 0,
-            count: limit,
-          },
-        }
-      );
-    }
+      generateTrendingCandidates(
+        limit * 2
+      ),
 
-//find large followers acc
-
-    const largeAccounts = await User.find({
-      _id: { $in: user.following || [] },
-
-      $expr: {
-        $gte: [
-          { $size: "$followers" },
-          FANOUT_THRESHOLD,
-        ],
-      },
-    }).select("_id");
-
-    const largeAccountIds = largeAccounts.map(
-      (account) => account._id
-    );
+      generateExplorationCandidates({
+        user,
+        cursor,
+        limit: limit * 2,
+      }),
+    ]);
 
 
-
-    let largeAccountPosts = [];
-
-    if (largeAccountIds.length > 0) {
-      const largeAccountQuery = {
-        user: { $in: largeAccountIds },
-      };
-
-      // If cursor exists, only get posts older than cursor
-      if (cursor) {
-        largeAccountQuery.createdAt = {
-          $lt: new Date(Number(cursor)),
-        };
-      }
-
-      largeAccountPosts = await Post.find(
-        largeAccountQuery
-      )
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .populate(
-          "user",
-          "username name profileImage"
-        )
-        .populate(
-          "comments.user",
-          "username name profileImage"
-        );
-    }
-
-
-
-    let redisPosts = [];
-
-    if (redisPostIds.length > 0) {
-      redisPosts = await Post.find({
-        _id: { $in: redisPostIds },
-      })
-        .populate(
-          "user",
-          "username name profileImage"
-        )
-        .populate(
-          "comments.user",
-          "username name profileImage"
-        );
-    }
-
-
-
-    const postMap = new Map(
-      redisPosts.map((post) => [
-        post._id.toString(),
-        post,
-      ])
-    );
-
-    const orderedRedisPosts = redisPostIds
-      .map((id) => postMap.get(id))
-      .filter(Boolean);
-
-    const allPosts = [
-      ...orderedRedisPosts,
-      ...largeAccountPosts,
+    const allCandidates = [
+      ...followingCandidates,
+      ...trendingCandidates,
+      ...explorationCandidates,
     ];
 
 
-    allPosts.sort(
+    const seen = new Set();
+
+    const uniqueCandidates =
+      allCandidates.filter((post) => {
+        const postId = post._id.toString();
+
+        if (seen.has(postId)) {
+          return false;
+        }
+
+        seen.add(postId);
+
+        return true;
+      });
+
+    // ==========================================
+    // 6. TEMPORARY RANKING
+    // ==========================================
+    //
+    // For now we simply rank by recency.
+    //
+    // Later:
+    // candidate pool
+    //      ↓
+    // features
+    //      ↓
+    // ML ranking
+    //
+
+    uniqueCandidates.sort(
       (a, b) =>
         new Date(b.createdAt) -
         new Date(a.createdAt)
     );
 
+    // ==========================================
+    // 7. TAKE TOP POSTS
+    // ==========================================
 
-    const uniquePosts = [];
+    const postsToReturn =
+      uniqueCandidates.slice(0, limit);
 
-    const seenPosts = new Set();
+    // ==========================================
+    // 8. FORMAT POSTS
+    // ==========================================
 
-    for (const post of allPosts) {
-      const postId = post._id.toString();
-
-      if (!seenPosts.has(postId)) {
-        seenPosts.add(postId);
-        uniquePosts.push(post);
-      }
-    }
-
-
-
-    const postsToReturn = uniquePosts.slice(
-      0,
-      limit
-    );
-
-
-    const formattedPosts = postsToReturn.map(
-      (post) => {
+    const formattedPosts =
+      postsToReturn.map((post) => {
         const isLiked =
           post.likes?.some(
             (likeId) =>
@@ -204,28 +153,36 @@ const getFeed = async (req, res) => {
 
           createdAt: post.createdAt,
         };
-      }
-    );
+      });
 
     // ==========================================
-    // 10. CREATE NEXT CURSOR
+    // 9. CREATE NEXT CURSOR
     // ==========================================
 
     let nextCursor = null;
 
     if (postsToReturn.length === limit) {
       const lastPost =
-        postsToReturn[postsToReturn.length - 1];
+        postsToReturn[
+          postsToReturn.length - 1
+        ];
 
       nextCursor = new Date(
         lastPost.createdAt
       ).getTime();
     }
 
+    // ==========================================
+    // 10. RESPONSE
+    // ==========================================
+
     res.json({
       posts: formattedPosts,
+
       nextCursor,
-      hasMore: nextCursor !== null,
+
+      hasMore:
+        nextCursor !== null,
     });
   } catch (error) {
     console.error(
@@ -238,39 +195,67 @@ const getFeed = async (req, res) => {
     });
   }
 };
+
 const toggleLikePost = async (req, res) => {
   try {
-    const { userId, isAuthenticated } = getAuth(req);
+    const { userId } = getAuth(req);
+
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
     }
 
     const user = await getOrCreateUser(userId);
     const { postId } = req.params;
 
     const post = await Post.findById(postId);
+
     if (!post) {
-      return res.status(404).json({ message: "Post not found" });
+      return res.status(404).json({
+        message: "Post not found",
+      });
     }
 
-    if (!post.likes) post.likes = [];
+    if (!post.likes) {
+      post.likes = [];
+    }
 
     const alreadyLiked = post.likes.some(
-      (likeId) => likeId.toString() === user._id.toString(),
+      (likeId) =>
+        likeId &&
+        likeId.toString() === user._id.toString()
     );
 
+    let scoreChange;
+
     if (alreadyLiked) {
+      // Unlike
       post.likes = post.likes.filter(
-        (likeId) => likeId.toString() !== user._id.toString(),
+        (likeId) =>
+          likeId &&
+          likeId.toString() !== user._id.toString()
       );
+
+      scoreChange = -1;
     } else {
+      // Like
       post.likes.push(user._id);
+
+      scoreChange = 1;
     }
 
     await post.save();
 
-    // Invalidate feed cache after like toggle
-    await invalidateFeedCache();
+    //updateing the trending post score
+
+    await redis.zIncrBy(
+      "trending:posts",
+      scoreChange,
+      postId
+    );
+
+    await invalidateFeedCache(user._id);
 
     res.json({
       isLiked: !alreadyLiked,
@@ -278,32 +263,45 @@ const toggleLikePost = async (req, res) => {
     });
   } catch (error) {
     console.error("Toggle like error:", error);
-    res.status(500).json({ message: "Failed to toggle like status" });
+
+    res.status(500).json({
+      message: "Failed to toggle like status",
+    });
   }
 };
 
 const addComment = async (req, res) => {
   try {
-    const { userId, isAuthenticated } = getAuth(req);
+    const { userId } = getAuth(req);
 
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
     }
 
     const { text } = req.body;
+
     if (!text || !text.trim()) {
-      return res.status(400).json({ message: "Comment text is required" });
+      return res.status(400).json({
+        message: "Comment text is required",
+      });
     }
 
     const user = await getOrCreateUser(userId);
     const { postId } = req.params;
 
     const post = await Post.findById(postId);
+
     if (!post) {
-      return res.status(404).json({ message: "Post not found" });
+      return res.status(404).json({
+        message: "Post not found",
+      });
     }
 
-    if (!post.comments) post.comments = [];
+    if (!post.comments) {
+      post.comments = [];
+    }
 
     const newComment = {
       user: user._id,
@@ -312,17 +310,28 @@ const addComment = async (req, res) => {
     };
 
     post.comments.push(newComment);
-    await post.save();
 
-    const updatedPost = await Post.findById(postId).populate(
-      "comments.user",
-      "username name profileImage",
+    await post.save();
+//update the score of the trending post  when comment is been addede
+
+    await redis.zIncrBy(
+      "trending:posts",
+      3,
+      postId
     );
 
-    const addedComment = updatedPost.comments[updatedPost.comments.length - 1];
+    const updatedPost = await Post.findById(postId)
+      .populate(
+        "comments.user",
+        "username name profileImage"
+      );
 
-    // Invalidate feed cache after adding comment
-    await invalidateFeedCache();
+    const addedComment =
+      updatedPost.comments[
+        updatedPost.comments.length - 1
+      ];
+
+    await invalidateFeedCache(user._id);
 
     res.status(201).json({
       comment: addedComment,
@@ -330,7 +339,10 @@ const addComment = async (req, res) => {
     });
   } catch (error) {
     console.error("Add comment error:", error);
-    res.status(500).json({ message: "Failed to add comment" });
+
+    res.status(500).json({
+      message: "Failed to add comment",
+    });
   }
 };
 
@@ -339,7 +351,7 @@ const getComments = async (req, res) => {
     const { postId } = req.params;
     const post = await Post.findById(postId).populate(
       "comments.user",
-      "username name profileImage",
+      "username name profileImage"
     );
 
     if (!post) {
