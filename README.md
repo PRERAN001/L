@@ -1,215 +1,259 @@
-# Production Feed Recommendation & Ranking Architecture
+# Feed Recommendation & Machine Learning Ranking Architecture
 
 ## System Overview
 
-This document details the end-to-end architecture, mathematical modeling, and algorithmic design of the personalized content recommendation and feed infrastructure. The system implements a two-stage retrieval and ranking pipeline inspired by modern production systems (such as Instagram and TikTok), progressing from basic fanout strategies to vector-based memory networks, logistic engagement prediction, and Maximal Marginal Relevance (MMR) diversification.
+This project implements a personalized content recommendation and ranking engine for photos and video reels, similar to architectures used at Instagram and TikTok. It uses a two-stage retrieval and ranking pipeline that pairs Redis-backed candidate retrieval with a real-time vector memory system, multi-task logistic prediction models, and Maximal Marginal Relevance (MMR) diversification.
 
-##  Feed Preview
+## Feed Preview
 
-<img width="300" alt="Feed preview 1" src="https://github.com/user-attachments/assets/28894363-5494-400e-a095-af7f91e7b532" />
-
-<img width="300" alt="Feed preview 2" src="https://github.com/user-attachments/assets/f22e6627-f669-410b-9443-e19bf06afce7" />
----
-
-## 1. High-Level Pipeline Architecture
-
-The recommendation pipeline operates in four discrete stages upon every client feed request:
-
-```
-[Candidate Retrieval] 
-       │
-       ▼
-[Feature Extraction & Vector Loading] 
-       │
-       ▼
-[Multi-Task Logistic Scoring] 
-       │
-       ▼
-[MMR Diversity Reranking & Pagination]
-```
-
-1. **Candidate Retrieval**: Extracts candidates from heterogeneous sources (Following Fanout, Trending Sorted Sets, and Exploration Sets).
-2. **Feature Extraction & Embedding Fusion**: Enriches candidates with social graph metrics, engagement signals, decay factors, and user affinity vectors.
-3. **Multi-Task Scoring**: Predicts independent probabilities for Likes, Comments, and Views using logistic regression models, combined into a singular composite engagement score.
-4. **Diversity Reranking (MMR)**: Penalizes semantic redundancy among top candidates using cosine distance over 384-dimensional dense embeddings.
-5. **Continuous Feed Pagination**: Employs an offset-safe continuous cursor mechanism that guarantees non-terminating feeds for both photo streams and vertical video reels.
+<p align="center">
+  <img width="300" alt="Feed preview 1" src="https://github.com/user-attachments/assets/28894363-5494-400e-a095-af7f91e7b532" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img width="300" alt="Feed preview 2" src="https://github.com/user-attachments/assets/f22e6627-f669-410b-9443-e19bf06afce7" />
+</p>
 
 ---
 
-## 2. Evolution of Feed Architecture (v1 to v13)
+## 1. High-Level Recommendation Pipeline
 
-### v1 to v6: Foundational Retrieval & Fanout Mechanics
+Whenever a user opens the app or requests more content, the feed passes through four sequential stages:
 
-* **v1 — Global Relational Queries**: Naive queries sorted solely by creation timestamps (`ORDER BY createdAt DESC`). Highly inefficient at scale due to index contention and lack of personalization.
-* **v2 — Direct Following Fanout**: Queries restricted to the user's explicit following graph (`{ user: { $in: followingIds } }`).
-* **v3 — Fanout-on-Write with Redis**: When a user creates a post, the post ID is pushed to the Redis Sorted Sets (`feed:<userId>`) of all followers. This shifts computational load from read-time to write-time, achieving sub-millisecond timeline reads.
-* **v4 — Hybrid Fanout (The Celebrity / High-Follower Problem)**: Users with more than 500 followers bypass fanout-on-write to prevent Redis write amplification and network saturation. For large accounts, fanout-on-read is utilized dynamically during candidate generation.
-* **v5 — Multi-Source Candidate Pooling**: Combines three distinct candidate streams:
-  * *Following Stream*: Posts from followed accounts (high social affinity).
-  * *Trending Stream*: Posts scoring highest on global Redis sorted sets (`trending:posts`).
-  * *Exploration Stream*: Posts from accounts outside the social graph to facilitate discovery.
-* **v6 — Interaction Logging & Asynchronous Ingestion**: Client-side viewability tracking emits structured events (`impression`, `view`, `skip`, `like`, `comment`, `share`) batched and processed asynchronously to prevent blocking the read path.
+```
+[ Stage 1: Candidate Gathering ]
+Fetch ~60 candidate posts from Following, Trending, and Exploration sources.
+               │
+               ▼
+[ Stage 2: Memory & Feature Loading ]
+Load user taste vectors (U_short, U_long, U_current) and compute cosine similarities.
+               │
+               ▼
+[ Stage 3: Multi-Task Machine Learning Scoring ]
+Predict P(like), P(comment), P(view) using calibrated logistic models.
+               │
+               ▼
+[ Stage 4: MMR Diversification & Delivery ]
+Spread out similar topics, apply creator limits, and return continuous pages.
+```
 
-### v7 to v13: Machine Learning, Memory Vectors, and Production Optimization
+---
 
-* **v7 — Dense Semantic Embeddings**: Every post caption and media type is transformed into a normalized 384-dimensional dense vector via an embedding microservice utilizing a Transformer model (`all-MiniLM-L6-v2`).
-* **v8 — Short-Term Memory Vector (U_short)**: Tracks real-time session intent. Maintains a sliding window of the user's latest 50 interactions weighted by interaction type and exponential time decay.
-* **v9 — Long-Term Memory Vector (U_long)**: Captures permanent, persistent user interests. Updates via an Exponential Moving Average (EMA) upon every positive engagement.
-* **v10 — Dynamic Memory Fusion (U_current)**: Blends short-term and long-term memory vectors to establish the active user preference state at request time.
-* **v11 — Logistic Multi-Task Ranking**: Replaces static heuristics with multi-objective logistic models predicting $P(\text{like})$, $P(\text{comment})$, and $P(\text{view})$.
-* **v12 — Maximal Marginal Relevance (MMR) Diversification**: Eliminates topic clustering and semantic repetition in the final ranked slate.
-* **v13 — Continuous Stream Paging & Media Segregation**: Fully decouples photo feeds from video reels with dedicated candidate generation, infinite cursor wrapping, and proactive Redis cache invalidation.
+## 2. Architecture Evolution (v1 to v13)
+
+### v1 to v6: Core Retrieval and Fanout Strategies
+
+* **v1 — Global Timestamp Sorting**: Simple query sorting all posts by `createdAt DESC`. Inefficient at scale and identical for all users.
+* **v2 — Following Feed**: Queries filtered to accounts the user directly follows (`{ user: { $in: followingIds } }`).
+* **v3 — Fanout-on-Write with Redis**: On post creation, the post ID is immediately pushed to the Redis Sorted Sets (`feed:<userId>`) of all followers. This delivers sub-millisecond read times upon app launch.
+* **v4 — Hybrid Fanout for Popular Accounts**: Accounts with over 500 followers skip fanout-on-write to prevent write amplification. Their posts are fetched dynamically on-read instead.
+* **v5 — Multi-Source Candidate Pooling**: Gathers candidates from three distinct streams:
+  * *Following*: Content from accounts the user follows.
+  * *Trending*: High-velocity posts from global Redis sets (`trending:posts`).
+  * *Exploration*: Content outside the social network to discover new interests.
+* **v6 — Interaction Logging**: Client-side viewability tracking logs passive and active events (`impression`, `view`, `skip`, `like`, `comment`, `share`) in 5-second batches.
+
+### v7 to v13: Vector Embeddings, Memory Vectors, and ML Ranking
+
+* **v7 — Dense Semantic Embeddings**: Text captions and media types are converted into 384-dimensional dense vectors using the `all-MiniLM-L6-v2` transformer model.
+* **v8 — Short-Term Session Memory ($U_{\text{short}}$)**: Tracks the user's last 50 interactions with exponential time decay.
+* **v9 — Long-Term Memory ($U_{\text{long}}$)**: Captures permanent preferences using Exponential Moving Average (EMA) updates.
+* **v10 — Live Memory Fusion ($U_{\text{current}}$)**: Blends $U_{\text{long}}$ and $U_{\text{short}}$ into a single active preference vector.
+* **v11 — Logistic Multi-Task Ranking**: Replaces heuristics with calibrated models predicting $P(\text{like})$, $P(\text{comment})$, and $P(\text{view})$.
+* **v12 — Maximal Marginal Relevance (MMR)**: Re-ranks top items to eliminate repetitive topics and echo chambers.
+* **v13 — Continuous Paging & Media Segregation**: Photo feeds and video reels are strictly separated, and offset cursor pagination ensures feeds scroll continuously without stopping.
 
 ---
 
 ## 3. Candidate Generation Layer
 
-The candidate generation layer gathers up to 60 candidates per request across four distinct sources:
+Instead of scoring thousands of posts in the database, the system retrieves a candidate pool of 60 items across three channels:
 
-### 3.1 Following Candidates
-* **Small Accounts (< 500 followers)**: Read directly from the user's Redis sorted set `feed:<userId>` using reverse score ranges.
-* **Large Accounts (>= 500 followers)**: Queried on-demand from MongoDB via indexed follower lookups.
+1. **Following Stream**:
+   * For standard accounts (< 500 followers): Read directly from `feed:<userId>` in Redis.
+   * For large accounts (>= 500 followers): Read dynamically from MongoDB.
+2. **Trending Stream**:
+   * Pulled from the Redis sorted set `trending:posts`, where scores update dynamically on user actions:
+     * Like: $+1$
+     * Comment: $+3$
+     * Share: $+5$
+3. **Exploration Stream**:
+   * Pulled from MongoDB for accounts outside the user's social network.
 
-### 3.2 Trending Candidates
-Maintained in a global Redis ZSET (`trending:posts`). Scores are dynamically adjusted via `ZINCRBY` on incoming events:
-* Like: $+1$
-* Comment: $+3$
-* Share: $+5$
-* Skip / Decay: Periodic score attenuation
-
-### 3.3 Exploration Candidates
-Retrieves non-followed content from the database. On pagination requests, queries use offset slicing to guarantee discovery of unseen content across the entire corpus.
-
-### 3.4 Media Isolation
-The query layer strictly enforces media separation:
-* **Home Feed**: `mediaType: { $ne: "video" }`
-* **Reels Feed**: `mediaType: "video"`
+### Media Type Segregation
+* **Home Feed**: Filtered strictly to `mediaType: { $ne: "video" }` (photos only).
+* **Reels Feed**: Filtered strictly to `mediaType: "video"` (vertical video reels only).
 
 ---
 
-## 4. User Memory System (Dual-Vector Architecture)
+## 4. User Taste Vector Modeling (Dual Memory)
 
-The system models user preferences using two complementary dense vectors in $\mathbb{R}^{384}$, L2-normalized:
+User preferences are represented by two complementary 384-dimensional vectors ($\mathbb{R}^{384}$), both L2-normalized.
 
 ```
-[Incoming Interactions] ──► [Short-Term Memory (Window + Exponential Decay)] ──► U_short
-                                                                                   │
-                                                                                   ├─► U_current = λ·U_long + (1-λ)·U_short
-                                                                                   │
-[Positive Engagements]  ──► [Long-Term Memory (Exponential Moving Average)]   ──► U_long
+[Actions: View, Like, Comment, Share] ──► [Short-Term Memory Window] ──► U_short
+                                                                           │
+                                                                           ├─► U_current = λ·U_long + (1-λ)·U_short
+                                                                           │
+[Positive Signals: Like, Comment, Share] ──► [EMA Long-Term Memory]  ──► U_long
 ```
 
 ### 4.1 Short-Term Memory ($U_{\text{short}}$)
-Maintains up to 50 recent interactions in Redis list `user:short:<userId>`. Each interaction contains:
-* Post embedding vector $\vec{v}_i$
-* Interaction weight $w_{\text{type}}$
-* Timestamp $t_i$
 
-Interaction weights are configured as:
-$$\text{Impression} = 0.05, \quad \text{View} = 0.10, \quad \text{Like} = 0.50, \quad \text{Comment} = 0.70, \quad \text{Save} = 0.90, \quad \text{Share} = 1.00$$
+Short-term memory captures what the user is actively interested in during the current session. It holds the last 50 interactions in a Redis list (`user:short:<userId>`).
 
-Recency decay for interaction $i$ occurring $\Delta t_i$ hours ago is computed as:
-$$R(\Delta t_i) = e^{-\gamma \cdot \Delta t_i} \quad (\text{where } \gamma = 0.1)$$
+#### Interaction Weights ($w_{\text{type}}$)
+Different actions signal different levels of interest:
+* **Impression** $= 0.05$ (scrolled past)
+* **View** $= 0.10$ (watched or looked for >= 1 second)
+* **Like** $= 0.50$ (explicit positive feedback)
+* **Comment** $= 0.70$ (high investment positive feedback)
+* **Save** $= 0.90$ (intent to revisit)
+* **Share** $= 1.00$ (highest endorsement signal)
 
-The composite short-term vector is the weighted normalized sum:
+#### Recency Time Decay ($R$)
+Older interactions in the session lose influence according to exponential decay:
+
+$$R(\Delta t) = e^{-\gamma \cdot \Delta t}$$
+
+* $\Delta t$ is the age of the interaction in hours.
+* $\gamma = 0.1$ is the decay rate. An interaction from 5 hours ago retains $\approx 60\%$ of its initial weight.
+
+#### Computing $U_{\text{short}}$
+The combined short-term vector is the weighted, decayed sum of interaction embeddings $\vec{v}_i$, normalized to unit length:
+
 $$U_{\text{short}} = \text{Normalize}\left( \sum_{i=1}^{N} w_{\text{type}, i} \cdot R(\Delta t_i) \cdot \vec{v}_i \right)$$
-
-### 4.2 Long-Term Memory ($U_{\text{long}}$)
-Stored in Redis string `user:long:<userId>`. Represents the user's core historical profile. Upon each positive interaction (like, comment, share) with a post of vector $\vec{v}$, $U_{\text{long}}$ is updated using an Exponential Moving Average (EMA) with learning rate $\alpha = 0.1$:
-$$U_{\text{long}}^{(t+1)} = \text{Normalize}\left( (1 - \alpha) \cdot U_{\text{long}}^{(t)} + \alpha \cdot \vec{v} \right)$$
-
-### 4.3 Active Memory Blending ($U_{\text{current}}$)
-During ranking, the active preference vector is computed by interpolating long-term stability and short-term session dynamics:
-$$U_{\text{current}} = \text{Normalize}\left( \lambda \cdot U_{\text{long}} + (1 - \lambda) \cdot U_{\text{short}} \right) \quad (\text{where } \lambda = 0.7)$$
 
 ---
 
-## 5. Feature Engineering & Multi-Task Ranking
+### 4.2 Long-Term Memory ($U_{\text{long}}$)
 
-Each candidate post $p$ is evaluated against the requesting user $u$ to produce a structured feature vector:
+Long-term memory represents persistent preferences built over weeks or months. Stored in Redis (`user:long:<userId>`), it updates on positive engagements (like, comment, share) using an Exponential Moving Average (EMA):
 
-$$\vec{f} = \big[ \text{simCurrent}, \text{simShort}, \text{simLong}, \text{isFollowing}, \text{isSelf}, \text{likes}, \text{comments}, \text{postAgeHours}, \text{source} \big]$$
+$$U_{\text{long}}^{(t+1)} = \text{Normalize}\left( (1 - \alpha) \cdot U_{\text{long}}^{(t)} + \alpha \cdot \vec{v}_{\text{post}} \right)$$
 
-### 5.1 Cosine Similarities
-Cosine similarities between the post embedding $\vec{v}_p$ and memory vectors are computed as dot products (since all vectors are L2-normalized):
+* $\alpha = 0.10$ is the learning rate.
+* This updates 10% of the long-term vector toward the new post's topic while preserving 90% of the user's historical profile.
+
+---
+
+### 4.3 Active Preference Blending ($U_{\text{current}}$)
+
+When scoring candidates, the system blends long-term stability with short-term intent:
+
+$$U_{\text{current}} = \text{Normalize}\left( \lambda \cdot U_{\text{long}} + (1 - \lambda) \cdot U_{\text{short}} \right)$$
+
+* $\lambda = 0.70$ assigns 70% weight to stable long-term taste and 30% weight to immediate session behavior.
+* If the user is new (cold start) and has no long-term memory, $U_{\text{short}}$ is used directly.
+
+---
+
+## 5. Machine Learning Engagement Scoring
+
+For each candidate post $p$, the system computes an engagement score using logistic regression models calibrated to real-world interaction baselines.
+
+### 5.1 Feature Transformations
+
+#### Cosine Similarity (Semantic Match)
+Because all embeddings are L2-normalized unit vectors, cosine similarity is calculated via dot products:
+
 $$\text{simCurrent} = U_{\text{current}} \cdot \vec{v}_p, \quad \text{simShort} = U_{\text{short}} \cdot \vec{v}_p, \quad \text{simLong} = U_{\text{long}} \cdot \vec{v}_p$$
 
-### 5.2 Engagement and Decay Transforms
-* **Log-Engagement Normalization**:
-  $$\text{logNorm}(x) = \log_{10}(\max(x, 0) + 1)$$
-* **Time Decay**:
-  $$\text{ageDecay}(t) = \frac{40}{(\max(t, 0) + 0.5)^{0.6}}$$
+#### Log-Compressed Engagement Counts
+To prevent viral posts with thousands of likes from overwhelming the scoring, engagement counts are scaled logarithmically:
 
-### 5.3 Multi-Objective Logistic Models
-The system computes three calibrated engagement probabilities using logistic functions $\sigma(z) = \frac{1}{1 + e^{-z}}$:
+$$\text{logNorm}(x) = \log_{10}(\max(x, 0) + 1)$$
 
-#### Probability of Like:
+* 10 likes $\rightarrow 1.04$
+* 100 likes $\rightarrow 2.00$
+* 1,000 likes $\rightarrow 3.00$
+
+#### Post Age Decay
+Fresh content receives higher baseline visibility through a sub-linear decay curve:
+
+$$\text{ageDecay}(t) = \frac{40}{(\max(t, 0) + 0.5)^{0.6}}$$
+
+* $t$ is the post age in hours.
+* A 1-hour-old post scores $\approx 31.7$
+* A 24-hour-old post scores $\approx 5.8$
+
+---
+
+### 5.2 Multi-Objective Logistic Models
+
+The system predicts three distinct interaction probabilities using the logistic sigmoid function:
+
+$$\sigma(z) = \frac{1}{1 + e^{-z}}$$
+
+#### 1. Probability of Like — $P(\text{like})$
+
 $$z_{\text{like}} = -1.5 + 3.5 \cdot \text{simCurrent} + 1.5 \cdot \text{simShort} + 0.8 \cdot \text{simLong} + 0.8 \cdot \text{isFollowing} + 0.4 \cdot \text{isSelf} + 0.6 \cdot \text{logNorm}(\text{likes}) + 0.4 \cdot \text{logNorm}(\text{comments}) + 0.003 \cdot \text{ageDecay}(t) + 0.5 \cdot \text{sourceScore} - 0.3 \cdot (1 - \text{hasEmbedding})$$
 
 $$P(\text{like}) = \sigma(z_{\text{like}})$$
 
-#### Probability of Comment:
+* **Bias ($-1.5$)**: Reflects an average baseline like rate of $\approx 18\%$.
+* **$\text{simCurrent}$ ($+3.5$)**: The strongest single ranking signal—measures how well the post matches the user's active taste.
+* **Social signals ($+0.8, +0.4$)**: Boosts creators the user follows.
+
+#### 2. Probability of Comment — $P(\text{comment})$
+
 $$z_{\text{comment}} = -2.5 + 3.0 \cdot \text{simCurrent} + 1.2 \cdot \text{simShort} + 0.6 \cdot \text{simLong} + 0.7 \cdot \text{isFollowing} + 0.3 \cdot \text{isSelf} + 0.5 \cdot \text{logNorm}(\text{likes}) + 0.7 \cdot \text{logNorm}(\text{comments}) + 0.002 \cdot \text{ageDecay}(t) + 0.4 \cdot \text{sourceScore}$$
 
 $$P(\text{comment}) = \sigma(z_{\text{comment}})$$
 
-#### Probability of View:
+* **Bias ($-2.5$)**: Reflects that comments are rarer than likes (baseline $\approx 7\%$).
+* **$\text{logNorm}(\text{comments})$ ($+0.7$)**: Active discussions encourage further commentary.
+
+#### 3. Probability of View / Read — $P(\text{view})$
+
 $$z_{\text{view}} = -0.8 + 2.0 \cdot \text{simCurrent} + 1.0 \cdot \text{simShort} + 0.5 \cdot \text{isFollowing} + 0.4 \cdot \text{logNorm}(\text{likes}) + 0.3 \cdot \text{logNorm}(\text{comments}) + 0.005 \cdot \text{ageDecay}(t) + 0.3 \cdot \text{sourceScore}$$
 
 $$P(\text{view}) = \sigma(z_{\text{view}})$$
 
-#### Composite Engagement Score:
+* **Bias ($-0.8$)**: Viewing or reading a post has a higher baseline probability ($\approx 31\%$).
+
+---
+
+### 5.3 Composite Ranking Score
+
+The overall relevance score combines all three predicted probabilities with action weights, an exploration boost for new posts, and random jitter:
+
 $$\text{Score}(p) = 1.0 \cdot P(\text{like}) + 3.0 \cdot P(\text{comment}) + 0.5 \cdot P(\text{view}) + \text{ExplorationBoost} + \epsilon$$
 
-Where:
-* $\text{ExplorationBoost} = 0.15$ if post age $< 2\text{h}$ and engagement count $< 5$.
-* $\epsilon \sim \text{Uniform}(-0.05, 0.05) \cdot \text{Score}_{\text{base}}$ provides stochastic exploration to prevent feedback loops.
+* **Action Weights**: Comments are weighted $3.0\times$ and likes $1.0\times$, prioritizing engaging discussions over passive views.
+* **Exploration Boost**: Adds $+0.15$ if post age $< 2\text{ hours}$ and total engagements $< 5$, helping new content enter the distribution loop.
+* **Stochastic Jitter ($\epsilon$)**: Adds $\pm 5\%$ random variation to prevent deterministic feedback loops and introduce feed freshness.
 
 ---
 
 ## 6. Maximal Marginal Relevance (MMR) Diversification
 
-To prevent recommendation echo-chambers where top-scored items belong to the same topical cluster, the final candidate selection applies Maximal Marginal Relevance:
+Sorting purely by engagement score can lead to topic saturation (e.g., ten consecutive posts about cars). To maintain variety, candidate selection uses Maximal Marginal Relevance:
 
 $$\text{MMR}(d) = \arg\max_{d \in R \setminus S} \left[ \lambda_{\text{MMR}} \cdot \text{Score}(d) - (1 - \lambda_{\text{MMR}}) \cdot \max_{s \in S} \text{Sim}(d, s) \right]$$
 
-Where:
-* $R$ is the ranked candidate pool.
-* $S$ is the set of already selected items.
-* $\text{Sim}(d, s) = \vec{v}_d \cdot \vec{v}_s$ is the cosine similarity between item embeddings.
-* $\lambda_{\text{MMR}} = 0.7$ balances relevance against novelty.
+* $R$: Pool of scored candidate posts.
+* $S$: Set of posts already selected for the user's feed.
+* $\text{Sim}(d, s) = \vec{v}_d \cdot \vec{v}_s$: Cosine similarity between candidate post $d$ and already selected post $s$.
+* $\lambda_{\text{MMR}} = 0.70$: Balances relevance ($70\%$) against topical novelty ($30\%$).
 
-### Author Diversity Constraints
-In addition to semantic MMR, hard constraints enforce creator diversity:
-* Maximum 2 consecutive posts from the same author.
-* Maximum 3 total posts from the same author within a single page.
+### Author Diversity Rules
+* Maximum 2 consecutive posts from the same creator.
+* Maximum 3 total posts from the same creator on a single page.
 
 ---
 
-## 7. Caching & Real-Time Invalidation Strategy
+## 7. Caching and Invalidation Strategy
 
-To achieve sub-10ms response times for repeat visits while preserving real-time responsiveness to user actions, the service implements selective Redis caching:
+To balance low latency with immediate responsiveness to user actions, the service implements selective Redis caching:
 
-1. **Read Path**: Page 1 feed responses are cached in Redis (`feed:v2:photos:<userId>` and `reels:v2:<userId>`) with a 90-second TTL.
-2. **Write Invalidation**: Any write action by the user (like, comment, share, new upload) triggers immediate asynchronous cache deletion via `invalidateFeedCache(userId)`.
-3. **Live Recomputation**: The subsequent feed or reels request immediately pulls fresh candidates and recomputes ML features against the newly updated memory vector.
-
----
-
-## 8. Continuous Pagination & Infinite Scroll
-
-### Cursor Offset Protocol
-To eliminate cursor-trap conditions where ML ranking reorders old and new items across timestamp boundaries:
-* Cursors are encoded as monotonic integer offsets (`0`, `20`, `40`, `60`, ...).
-* Candidate queries utilize modulo database offsets to prevent premature pagination termination.
-* When a user reaches the end of historical unseen posts, the system seamlessly cycles exploration candidates with rank jitter, ensuring uninterrupted continuous feeds across both Home and Reels sections.
+1. **Page 1 Read Caching**: Initial feed requests are cached in Redis (`feed:v2:photos:<userId>` and `reels:v2:<userId>`) with a 90-second TTL, serving repeat tab visits in $< 5\text{ms}$.
+2. **Instant Write Invalidation**: When a user performs an active engagement (like, comment, share, or new post), `invalidateFeedCache(userId)` immediately deletes the user's cache keys.
+3. **Live Re-Ranking**: The subsequent feed load re-pulls candidate posts, evaluates them against the updated taste vector, and computes a newly tailored feed ranking.
 
 ---
 
-## 9. Telemetry and Event Stream Processing
+## 8. Continuous Infinite Paging
 
-Passive scroll events are gathered on client devices via viewability observers and dispatched in 5-second batches to `/api/feed/events`:
-* **Impression**: Fires upon candidate container intersection with the active viewport.
-* **View**: Fires when a post remains in the viewport for at least 1,000ms.
-* **Skip**: Fires if a post is scrolled out of the viewport under 1,000ms without explicit interaction.
-* **Engagement (Like / Comment / Share)**: Transmitted immediately to update Redis memory vectors in real time.
+To prevent feeds from prematurely ending when ML ranking reorders posts across timestamp boundaries:
+* Cursors are tracked as sequential integer offsets (`0`, `20`, `40`, `60`, ...).
+* Database queries utilize modulo offsets (`offset % totalPosts`) once the initial catalog is viewed.
+* When a user reaches the end of new content, the system seamlessly cycles exploration candidates with fresh ranking jitter, providing an endless feed for both photos and video reels.
