@@ -2,3 +2,7 @@ torch
 numpy
 pandas
 scikit-learn
+sentence-transformers
+fastapi
+uvicorn[standard]
+pydantic

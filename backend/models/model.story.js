@@ -20,6 +20,17 @@ const storySchema = new mongoose.Schema(
       required: true,
     },
 
+    caption: {
+      type: String,
+      default: "",
+    },
+
+    embedding: {
+      type: [Number],
+      default: undefined,
+      select: false,
+    },
+
     views: [
       {
         type: mongoose.Schema.Types.ObjectId,

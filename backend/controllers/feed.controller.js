@@ -9,6 +9,7 @@ const { generateExplorationCandidates } = require("../feed/explorationService");
 const { generateTrendingCandidates } = require("../feed/trendingService");
 const { extractCandidateFeatures } = require("../feed/featureService");
 const { rankCandidates } = require("../feed/rankingService");
+const { updateUserMemory } = require("../utils/userMemoryService");
 
 const FANOUT_THRESHOLD = 500;
 
@@ -69,12 +70,17 @@ const applyAuthorDiversity = (rankedCandidates, limit) => {
 };
 
 const invalidateFeedCache = async (userId) => {
-  // Do not delete the fanout sorted set feed:${userId} as it stores feed post IDs!
-  return;
+  if (redis && redis.isOpen && userId) {
+    try {
+      await redis.del(`feed:v2:photos:${userId}`);
+      await redis.del(`reels:v2:${userId}`);
+      await redis.del("reels:v2:anon");
+    } catch (_) {}
+  }
 };
 
 const getFeed = async (req, res) => {
-  try { 
+  try {
     const { userId } = getAuth(req);
     if (!userId) {
       return res.status(401).json({
@@ -89,22 +95,34 @@ const getFeed = async (req, res) => {
       50
     );
 
-    // cursor is a Unix timestamp (ms) string; absent on page 1
     const rawCursor = req.query.cursor;
+    let offset = 0;
     let timestampCursor = null;
+
     if (rawCursor) {
       const parsed = parseInt(rawCursor, 10);
-      // Only treat as a timestamp cursor (not an old page-number cursor)
-      if (!isNaN(parsed) && parsed > 1000000000000) {
-        timestampCursor = parsed;
+      if (!isNaN(parsed)) {
+        if (parsed > 1000000000000) {
+          timestampCursor = parsed;
+        } else {
+          offset = Math.max(0, parsed);
+        }
       }
     }
 
-    console.log(`[DEBUG] [feedController] getFeed called for user: ${user._id} (${user.username}), limit: ${limit}, cursor: ${rawCursor || 'none'} (timestampCursor: ${timestampCursor})`);
+    console.log(`[DEBUG] [feedController] getFeed for user: ${user._id}, limit: ${limit}, rawCursor: ${rawCursor}, offset: ${offset}, tsCursor: ${timestampCursor}`);
 
-    // Fetch a healthy pool of candidates; on subsequent pages we pass the
-    // timestamp cursor so services skip already-seen posts.
-    const candidatePoolLimit = limit * 5;
+    const feedCacheKey = `feed:v2:photos:${user._id}`;
+    if (!rawCursor && redis && redis.isOpen) {
+      try {
+        const cached = await redis.get(feedCacheKey);
+        if (cached) {
+          return res.json(JSON.parse(cached));
+        }
+      } catch (cacheErr) {}
+    }
+
+    const candidatePoolLimit = Math.min(limit * 3, 60);
 
     const [
       followingCandidates,
@@ -118,7 +136,8 @@ const getFeed = async (req, res) => {
       }),
 
       generateTrendingCandidates(
-        candidatePoolLimit
+        candidatePoolLimit,
+        timestampCursor
       ),
 
       generateExplorationCandidates({
@@ -128,133 +147,124 @@ const getFeed = async (req, res) => {
       }),
     ]);
 
-    console.log(`[DEBUG] [feedController] Candidates fetched - Following: ${followingCandidates.length}, Trending: ${trendingCandidates.length}, Exploration: ${explorationCandidates.length}`);
+    let selfCandidates = [];
+    if (!rawCursor) {
+      const selfPosts = await Post.find({ user: user._id, mediaType: { $ne: "video" } })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .populate("user", "username name profileImage")
+        .populate("comments.user", "username name profileImage");
 
-    const allCandidates = [
+      selfCandidates = selfPosts.map((post) => ({
+        post,
+        source: "following",
+      }));
+    }
+
+    let allCandidates = [
+      ...selfCandidates,
       ...followingCandidates,
       ...trendingCandidates,
       ...explorationCandidates,
     ];
 
     const seen = new Set();
+    let uniqueCandidates = allCandidates.filter((candidate) => {
+      if (!candidate || !candidate.post || !candidate.post._id) {
+        return false;
+      }
+      const postId = candidate.post._id.toString();
+      if (seen.has(postId)) {
+        return false;
+      }
+      seen.add(postId);
+      return true;
+    });
 
-    const uniqueCandidates =
-      allCandidates.filter((candidate) => {
-        if (!candidate || !candidate.post || !candidate.post._id) {
-          return false;
+    if (uniqueCandidates.length < limit) {
+      const totalPhotos = await Post.countDocuments({ mediaType: { $ne: "video" } });
+      const safeSkip = offset % Math.max(1, totalPhotos);
+      const fallbackPosts = await Post.find({ mediaType: { $ne: "video" } })
+        .sort({ createdAt: -1 })
+        .skip(safeSkip)
+        .limit(limit * 2)
+        .populate("user", "username name profileImage")
+        .populate("comments.user", "username name profileImage");
+
+      for (const p of fallbackPosts) {
+        const pId = p._id.toString();
+        if (!seen.has(pId)) {
+          seen.add(pId);
+          uniqueCandidates.push({ post: p, source: "exploration" });
         }
+      }
+    }
 
-        const postId = candidate.post._id.toString();
-
-        if (seen.has(postId)) {
-          return false;
-        }
-
-        seen.add(postId);
-
-        return true;
-      });
-
-    console.log(`[DEBUG] [feedController] Total unique candidates before scoring: ${uniqueCandidates.length}`);
-
-    const candidatesWithFeatures = extractCandidateFeatures(
+    const candidatesWithFeatures = await extractCandidateFeatures(
       uniqueCandidates,
       user
     );
 
     const rankedCandidates = rankCandidates(
-      candidatesWithFeatures
+      candidatesWithFeatures,
+      limit
     );
 
-    // ==========================================
-    // APPLY AUTHOR DIVERSITY
-    // ==========================================
-    // Apply diversity rules to prevent author spam while preserving ranking.
     const diverseCandidates = applyAuthorDiversity(rankedCandidates, limit);
 
-    // Take the top `limit` posts from the diverse pool for this page.
-    // Deeper pages are handled by advancing the timestamp cursor so candidate
-    // services return a fresh, non-overlapping batch from the DB.
-    const postsToReturn = diverseCandidates
+    let postsToReturn = diverseCandidates
       .slice(0, limit)
       .map((candidate) => candidate.post);
 
-    console.log(`[DEBUG] [feedController] Returning ${postsToReturn.length} ranked posts (cursor: ${timestampCursor}, total candidates: ${rankedCandidates.length}).`);
-    postsToReturn.forEach((p, idx) => {
-      console.log(`[DEBUG] [feedController] Feed Post #${idx + 1}: ID ${p._id}, Author: ${p.user?.username || p.user}, CreatedAt: ${p.createdAt}`);
+    if (postsToReturn.length === 0) {
+      const fallback = await Post.find({ mediaType: { $ne: "video" } })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .populate("user", "username name profileImage")
+        .populate("comments.user", "username name profileImage");
+      postsToReturn = fallback;
+    }
+
+    const formattedPosts = postsToReturn.map((post) => {
+      const isLiked = post.likes?.some(
+        (likeId) => likeId.toString() === user._id.toString()
+      ) || false;
+
+      return {
+        _id: post._id,
+        user: post.user,
+        mediaUrl: post.mediaUrl,
+        mediaType: post.mediaType,
+        caption: post.caption,
+        likesCount: post.likes?.length || 0,
+        isLiked,
+        commentsCount: post.comments?.length || 0,
+        comments: (post.comments || []).map((comment) => ({
+          _id: comment._id,
+          user: comment.user,
+          text: comment.text,
+          createdAt: comment.createdAt,
+        })),
+        createdAt: post.createdAt,
+      };
     });
 
-    const formattedPosts =
-      postsToReturn.map((post) => {
-        const isLiked =
-          post.likes?.some(
-            (likeId) =>
-              likeId.toString() ===
-              user._id.toString()
-          ) || false;
-
-        return {
-          _id: post._id,
-
-          user: post.user,
-
-          mediaUrl: post.mediaUrl,
-          mediaType: post.mediaType,
-          caption: post.caption,
-
-          likesCount:
-            post.likes?.length || 0,
-
-          isLiked,
-
-          commentsCount:
-            post.comments?.length || 0,
-
-          comments: (post.comments || []).map(
-            (comment) => ({
-              _id: comment._id,
-              user: comment.user,
-              text: comment.text,
-              createdAt: comment.createdAt,
-            })
-          ),
-
-          createdAt: post.createdAt,
-        };
-      });
-
-    // ==========================================
-    // 9. CREATE NEXT CURSOR
-    // ==========================================
-
-    // Use the createdAt timestamp of the oldest returned post as the next
-    // cursor.  Candidate services will fetch posts *older than* this timestamp,
-    // giving a non-overlapping, ever-deepening feed.
-    const hasMore = postsToReturn.length === limit;
-    const oldestPost = postsToReturn[postsToReturn.length - 1];
-    const nextCursor = hasMore && oldestPost
-      ? new Date(oldestPost.createdAt).getTime().toString()
-      : null;
-
-    console.log(`[DEBUG] [feedController] Next cursor: ${nextCursor}, hasMore: ${hasMore}`);
-
-    // ==========================================
-    // 10. RESPONSE
-    // ==========================================
+    const nextOffset = offset + formattedPosts.length;
+    const nextCursor = String(nextOffset);
+    const hasMore = true;
 
     res.json({
       posts: formattedPosts,
-
       nextCursor,
-
       hasMore,
     });
-  } catch (error) {
-    console.error(
-      "Get feed error:",
-      error
-    );
 
+    if (!rawCursor && redis && redis.isOpen) {
+      const payload = JSON.stringify({ posts: formattedPosts, nextCursor, hasMore });
+      redis.setEx(feedCacheKey, 90, payload).catch(() => {});
+    }
+  } catch (error) {
+    console.error("Get feed error:", error);
     res.status(500).json({
       message: "Failed to get feed",
     });
@@ -316,6 +326,13 @@ const toggleLikePost = async (req, res) => {
         eventType: "like",
         timestamp: new Date(),
       }).catch((err) => console.error("[FeedEvent] Like event error:", err.message));
+
+      // Update user memory with this positive signal (fire-and-forget)
+      updateUserMemory({
+        userId: user._id.toString(),
+        postId,
+        eventType: "like",
+      });
     }
 
     await post.save();
@@ -399,6 +416,13 @@ const addComment = async (req, res) => {
       timestamp: new Date(),
     }).catch((err) => console.error("[FeedEvent] Comment event error:", err.message));
 
+    // Update user memory — commenting is a strong engagement signal (fire-and-forget)
+    updateUserMemory({
+      userId: user._id.toString(),
+      postId,
+      eventType: "comment",
+    });
+
     //update the score of the trending post when comment is added
     if (redis && redis.isOpen) {
       try {
@@ -460,9 +484,172 @@ const getComments = async (req, res) => {
   }
 };
 
+const getReels = async (req, res) => {
+  try {
+    let user = null;
+    try {
+      const { userId } = getAuth(req);
+      if (userId) user = await getOrCreateUser(userId);
+    } catch (_) {}
+
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const rawCursor = req.query.cursor;
+    let offset = 0;
+    let timestampCursor = null;
+
+    if (rawCursor) {
+      const parsed = parseInt(rawCursor, 10);
+      if (!isNaN(parsed)) {
+        if (parsed > 1000000000000) {
+          timestampCursor = parsed;
+        } else {
+          offset = Math.max(0, parsed);
+        }
+      }
+    }
+
+    const cacheKey = user ? `reels:v2:${user._id}` : "reels:v2:anon";
+    if (!rawCursor && redis && redis.isOpen) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          return res.json(JSON.parse(cached));
+        }
+      } catch (_) {}
+    }
+
+    const totalVideos = await Post.countDocuments({ mediaType: "video" });
+    const safeSkip = totalVideos > 0 ? offset % totalVideos : 0;
+    const poolLimit = Math.min(limit * 3, 60);
+
+    const query = { mediaType: "video" };
+    if (timestampCursor) {
+      query.createdAt = { $lt: new Date(timestampCursor) };
+    }
+
+    let videoPosts = await Post.find(query)
+      .sort({ createdAt: -1 })
+      .skip(timestampCursor ? 0 : safeSkip)
+      .limit(poolLimit)
+      .populate("user", "username name profileImage")
+      .populate("comments.user", "username name profileImage");
+
+    if (videoPosts.length === 0 && totalVideos > 0) {
+      videoPosts = await Post.find({ mediaType: "video" })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .populate("user", "username name profileImage")
+        .populate("comments.user", "username name profileImage");
+    }
+
+    let rankedPosts;
+    if (user && videoPosts.length > 0) {
+      const candidates = videoPosts.map((post) => ({
+        post,
+        source: "trending",
+      }));
+
+      try {
+        const candidatesWithFeatures = await extractCandidateFeatures(
+          candidates,
+          user
+        );
+        const ranked = rankCandidates(candidatesWithFeatures, limit);
+        rankedPosts = ranked.map((c) => c.post);
+      } catch (rankErr) {
+        rankedPosts = videoPosts.slice(0, limit);
+      }
+    } else {
+      rankedPosts = videoPosts.slice(0, limit);
+    }
+
+    const reels = rankedPosts.map((post) => {
+      const isLiked = user
+        ? post.likes?.some((id) => id.toString() === user._id.toString())
+        : false;
+
+      return {
+        id: post._id.toString(),
+        _id: post._id.toString(),
+        video: post.mediaUrl,
+        mediaUrl: post.mediaUrl,
+        username: post.user?.username || post.user?.name || "user",
+        profileImage: post.user?.profileImage || "https://i.pravatar.cc/150?img=12",
+        caption: post.caption || "",
+        likes: post.likes?.length || 0,
+        isLiked,
+        commentsCount: post.comments?.length || 0,
+        createdAt: post.createdAt,
+      };
+    });
+
+    const nextOffset = offset + reels.length;
+    const nextCursor = String(nextOffset);
+    const hasMore = true;
+
+    res.json({
+      reels,
+      nextCursor,
+      hasMore,
+    });
+
+    if (redis && redis.isOpen && !rawCursor) {
+      redis.setEx(cacheKey, 90, JSON.stringify({ reels, nextCursor, hasMore })).catch(() => {});
+    }
+  } catch (error) {
+    console.error("Get reels error:", error);
+    res.status(500).json({ message: "Failed to fetch reels" });
+  }
+};
+
+const sharePost = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const user = await getOrCreateUser(userId);
+    const { postId } = req.params;
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    FeedEvent.create({
+      user: user._id,
+      post: postId,
+      eventType: "share",
+      timestamp: new Date(),
+    }).catch((err) => console.error("[FeedEvent] Share event error:", err.message));
+
+    updateUserMemory({
+      userId: user._id.toString(),
+      postId,
+      eventType: "share",
+    });
+
+    if (redis && redis.isOpen) {
+      try {
+        await redis.zIncrBy("trending:posts", 5, postId);
+      } catch (_) {}
+    }
+
+    await invalidateFeedCache(user._id);
+
+    res.json({ success: true, message: "Post shared" });
+  } catch (error) {
+    console.error("Share post error:", error);
+    res.status(500).json({ message: "Failed to share post" });
+  }
+};
+
 module.exports = {
   getFeed,
+  getReels,
   toggleLikePost,
   addComment,
   getComments,
+  sharePost,
 };

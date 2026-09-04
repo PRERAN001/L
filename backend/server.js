@@ -12,10 +12,13 @@ const storyRoutes = require("./routes/story.routes");
 const searchRoutes = require("./routes/search.routes");
 const liveRoutes = require("./routes/live.routes");
 
+const path = require("path");
+
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "upload")));
 
 // Clerk
 app.use(clerkMiddleware({

@@ -82,6 +82,7 @@ const generateFollowingCandidates = async ({
       user: {
         $in: largeAccountIds,
       },
+      mediaType: { $ne: "video" }, // Only photos for home feed
     };
 
     const tsMs = Number(cursor);
@@ -122,6 +123,7 @@ const generateFollowingCandidates = async ({
     user: {
       $in: followingAndSelfIds,
     },
+    mediaType: { $ne: "video" },
   };
 
   const tsMs2 = Number(cursor);
@@ -158,6 +160,7 @@ const generateFollowingCandidates = async ({
       _id: {
         $in: redisPostIds,
       },
+      mediaType: { $ne: "video" },
     })
       .populate(
         "user",

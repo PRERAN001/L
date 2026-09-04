@@ -19,6 +19,8 @@ export interface ThemeColors {
   tabBarInactive: string;
   danger: string;
   dangerBg: string;
+  accent: string;
+  heart: string;
 }
 
 export const lightColors: ThemeColors = {
@@ -37,6 +39,8 @@ export const lightColors: ThemeColors = {
   tabBarInactive: '#9CA3AF',
   danger: '#EF4444',
   dangerBg: '#FEF2F2',
+  accent: '#0095F6',
+  heart: '#ED4956',
 };
 
 export const darkColors: ThemeColors = {
@@ -55,6 +59,8 @@ export const darkColors: ThemeColors = {
   tabBarInactive: '#6B7280',
   danger: '#F87171',
   dangerBg: '#2D1517',
+  accent: '#0095F6',
+  heart: '#ED4956',
 };
 
 interface ThemeContextType {

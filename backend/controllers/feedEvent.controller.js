@@ -1,6 +1,7 @@
 const FeedEvent = require("../models/model.feedEvent");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
+const { updateUserMemory } = require("../utils/userMemoryService");
 
 const VALID_TYPES = new Set([
   "impression",
@@ -10,6 +11,16 @@ const VALID_TYPES = new Set([
   "save",
   "share",
   "skip",
+]);
+
+// Events that carry enough positive signal to update user memory.
+// "skip" and "impression" are omitted — skip is negative, impression is too weak.
+const MEMORY_EVENTS = new Set([
+  "view",
+  "like",
+  "comment",
+  "save",
+  "share",
 ]);
 
 // POST /feed/events
@@ -51,6 +62,17 @@ const recordEvents = async (req, res) => {
     console.log(
       `[FeedEvent] Recorded ${docs.length} events for user ${user._id}`
     );
+
+    // Update user memory for strong-signal events (fire-and-forget, no await)
+    for (const e of events) {
+      if (!e.postId || !MEMORY_EVENTS.has(e.eventType)) continue;
+
+      updateUserMemory({
+        userId: user._id.toString(),
+        postId: e.postId,
+        eventType: e.eventType,
+      });
+    }
   } catch (err) {
     // Don't surface errors — this is background telemetry
     console.error("[FeedEvent] Error recording events:", err.message);

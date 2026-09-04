@@ -16,6 +16,7 @@ const generateExplorationCandidates = async ({
     user: {
       $nin: excludedUserIds,
     },
+    mediaType: { $ne: "video" },
   };
 
   // cursor is a Unix timestamp (ms) number passed directly from the controller

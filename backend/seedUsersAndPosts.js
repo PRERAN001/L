@@ -32,21 +32,56 @@ const samplePhotos = [
 ];
 
 const sampleCaptions = [
-  "Breathtaking view from today's trip! 🏞️✨",
-  "Late night coding sessions & coffee ☕💻",
-  "Weekend vibes with good friends! 🎉",
-  "Delicious food makes every day better 🍕🔥",
-  "Chasing sunsets 🌅🧡",
-  "Exploring new places in the city 🏙️🚶‍♂️",
-  "Nature never fails to impress 🌲🍃",
-  "Stay creative and keep building 🚀",
-  "Cozy moments at home 📖☕",
-  "Live in the moment ✨📸",
-  "Golden hour magic 🌄",
-  "Work hard, play harder 💪💯",
-  "Simple pleasures of life 🌻",
-  "Never stop exploring 🗺️✨",
-  "Good times & tan lines 🏖️☀️",
+  "Breathtaking view from today's mountain hike! 🏞️✨",
+  "Late night coding sessions & fresh coffee ☕💻",
+  "Unforgettable weekend vibes with my favorite people 🎉",
+  "Delicious homemade pizza makes every evening better 🍕🔥",
+  "Chasing endless golden hour sunsets 🌅🧡",
+  "Exploring hidden alleyways and vintage cafes in the city 🏙️🚶‍♂️",
+  "Nature never fails to take my breath away 🌲🍃",
+  "Stay curious, stay creative, and keep building 🚀",
+  "Cozy Sunday morning reading with a warm cup of tea 📖☕",
+  "Living in the moment and catching good memories ✨📸",
+  "Golden hour hits different when you're by the beach 🌄🌊",
+  "Work hard in silence, let your progress make the noise 💪💯",
+  "Finding joy in the simple, quiet pleasures of life 🌻",
+  "Never stop exploring new horizons and fresh perspectives 🗺️✨",
+  "Good times, warm sunshine, and ocean waves 🏖️☀️",
+  "Freshly brewed espresso to kickstart a productive week ☕⚡",
+  "Architecture that speaks to the soul 🏛️💫",
+  "A quiet walk in the forest is all the therapy I need 🍃🍂",
+  "Tasting authentic street food in the heart of downtown 🌮😋",
+  "Milestones achieved, on to the next big challenge! 🎯🏆",
+  "The beauty of autumn colors in full bloom 🍁🍁",
+  "Distant mountain tops covered in fresh snow 🏔️❄️",
+  "Art is not what you see, but what you make others see 🎨🖌️",
+  "Late night city lights and rainy street reflections 🌧️🌃",
+  "Sweat now, shine later! Morning workout completed 🏋️‍♂️🔥",
+  "Fresh bakery treats to sweeten the day 🥐🍰",
+  "Surrounding myself with good energy and positive vibes ✨🌿",
+  "Stargazing under a crystal clear night sky 🌌⭐",
+  "Every sunset brings the promise of a new dawn 🌄",
+  "A quick weekend getaway to recharge the mind 🚗💨",
+  "Minimalist aesthetics & clean design inspiration 📐📱",
+  "Fresh smoothie bowl to start the morning right 🍓🥣",
+  "Road trips and endless playlists 🎵🛣️",
+  "Capturing candid moments that last forever 📷🤍",
+  "Morning mist over the peaceful lake 🌫️⛵",
+  "Chasing dreams and making them reality 💫🌟",
+  "The aroma of fresh coffee in the early morning ☕☀️",
+  "Exploring coastal trails with a sea breeze 🌊🌊",
+  "Creative process in action - turning ideas into code 💻🔮",
+  "Warm bonfire nights under the stars 🪵🔥",
+  "Tacos & sunshine make the ultimate combo 🌮☀️",
+  "Feast for the eyes and the stomach 🍲✨",
+  "Fitness journey progress - consistency is key 💪📊",
+  "Wandering through ancient cobblestone streets 🏰🌾",
+  "Sun-kissed mornings & gentle ocean breezes 🌅🌴",
+  "A bowl of hot ramen on a chilly evening 🍜❄️",
+  "Dreaming big, working focused, staying humble 🚀✨",
+  "Unwinding with a great book after a busy day 📚🛋️",
+  "Nature's canvas is filled with vibrant colors 🎨🌸",
+  "Finding peace away from the urban noise 🌿🏞️"
 ];
 
 const sampleComments = [
@@ -153,7 +188,7 @@ async function seed() {
     for (let i = 0; i < totalPostsToCreate; i++) {
       const author = getRandomItem(createdUsers);
       const photoUrl = samplePhotos[i % samplePhotos.length];
-      const caption = getRandomItem(sampleCaptions);
+      const caption = sampleCaptions[i % sampleCaptions.length] + (i >= sampleCaptions.length ? ` (#${i + 1})` : "");
 
       // Random likes from 3 to 25 users
       const likeCount = Math.floor(Math.random() * 23) + 3;

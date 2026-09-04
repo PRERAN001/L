@@ -25,6 +25,14 @@ const postSchema = new mongoose.Schema(
       default: "",
     },
 
+    // 384-dim sentence-transformer vector for content-based ranking.
+    // Generated at post creation time; null if embedding service was unavailable.
+    embedding: {
+      type: [Number],
+      default: undefined,
+      select: false,          // excluded from normal queries — only loaded when needed
+    },
+
     likes: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -42,6 +50,10 @@ const postSchema = new mongoose.Schema(
         text: {
           type: String,
           required: true,
+        },
+        embedding: {
+          type: [Number],
+          default: []
         },
 
         createdAt: {

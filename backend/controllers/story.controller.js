@@ -1,9 +1,10 @@
 const Story = require("../models/model.story");
 const { getOrCreateUser } = require("../utils/userHelper");
+const { getPostEmbedding } = require("../utils/embeddingClient");
 
 const createStory = async (req, res) => {
   try {
-    const { mediaUrl, mediaType = "image" } = req.body;
+    const { mediaUrl, mediaType = "image", caption = "" } = req.body;
     const clerkId = req.auth?.userId;
 
     if (!clerkId) {
@@ -16,8 +17,30 @@ const createStory = async (req, res) => {
       user: user._id,
       mediaUrl,
       mediaType,
+      caption,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
+
+    // ------------------------------------------------
+    // Generate & store caption embedding (best-effort)
+    // ------------------------------------------------
+    (async () => {
+      try {
+        const embedding = await getPostEmbedding({ caption, mediaType });
+
+        if (embedding) {
+          await Story.updateOne(
+            { _id: story._id },
+            { $set: { embedding } }
+          );
+          console.log(
+            `[DEBUG] [storyController] Embedding stored for story ${story._id} (${embedding.length} dims)`
+          );
+        }
+      } catch (embErr) {
+        console.warn("[storyController] Background embedding failed:", embErr.message);
+      }
+    })();
 
     const populatedStory = await Story.findById(story._id).populate("user", "username profileImage");
     res.status(201).json(populatedStory);

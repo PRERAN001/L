@@ -2,6 +2,7 @@ const Post = require("../models/model.post");
 const { getOrCreateUser } = require("../utils/userHelper");
 const { getAuth } = require("@clerk/express");
 const { redis } = require("../redis");
+const { getPostEmbedding } = require("../utils/embeddingClient");
 
 const createPost = async (req, res) => {
   try {
@@ -24,6 +25,29 @@ const createPost = async (req, res) => {
       caption,
     });
     console.log(`[DEBUG] [mediaController] Post created successfully. ID: ${post._id}, Author User ID: ${user._id}, CreatedAt: ${post.createdAt}`);
+
+    // ------------------------------------------------
+    // Generate & store caption embedding (best-effort)
+    // ------------------------------------------------
+    // Done *after* the post is saved so the response isn't blocked.
+    // We fire it in the background and update the document silently.
+    (async () => {
+      try {
+        const embedding = await getPostEmbedding({ caption, mediaType });
+
+        if (embedding) {
+          await Post.updateOne(
+            { _id: post._id },
+            { $set: { embedding } }
+          );
+          console.log(
+            `[DEBUG] [mediaController] Embedding stored for post ${post._id} (${embedding.length} dims)`
+          );
+        }
+      } catch (embErr) {
+        console.warn("[mediaController] Background embedding failed:", embErr.message);
+      }
+    })();
     //add post to the trending list
     if (redis && redis.isOpen) {
       try {
@@ -68,6 +92,16 @@ const createPost = async (req, res) => {
     );
 
     res.status(201).json(populatedPost);
+
+    // Invalidate this user's cached feed + reels so the next load includes the
+    // new post. Fire-and-forget — the response is already sent.
+    if (redis && redis.isOpen) {
+      redis.del(`feed:v2:photos:${user._id}`).catch(() => {});
+      if (mediaType === "video") {
+        redis.del(`reels:v2:${user._id}`).catch(() => {});
+        redis.del("reels:v2:anon").catch(() => {});
+      }
+    }
   } catch (error) {
     console.error("Create post error:", error);
     res.status(500).json({ message: "Failed to create post" });
