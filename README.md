@@ -4,6 +4,11 @@
 
 This document details the end-to-end architecture, mathematical modeling, and algorithmic design of the personalized content recommendation and feed infrastructure. The system implements a two-stage retrieval and ranking pipeline inspired by modern production systems (such as Instagram and TikTok), progressing from basic fanout strategies to vector-based memory networks, logistic engagement prediction, and Maximal Marginal Relevance (MMR) diversification.
 
+##  Feed Preview
+
+<img width="300" alt="Feed preview 1" src="https://github.com/user-attachments/assets/28894363-5494-400e-a095-af7f91e7b532" />
+
+<img width="300" alt="Feed preview 2" src="https://github.com/user-attachments/assets/f22e6627-f669-410b-9443-e19bf06afce7" />
 ---
 
 ## 1. High-Level Pipeline Architecture
